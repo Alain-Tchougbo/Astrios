@@ -12,6 +12,7 @@ class MissionStatus(str, enum.Enum):
     en_cours = "en_cours"
     plan_pret = "plan_pret"
     documents_prets = "documents_prets"
+    action_en_attente = "action_en_attente"
     terminee = "terminee"
 
 
@@ -23,6 +24,13 @@ class MessageRole(str, enum.Enum):
 class TaskStatus(str, enum.Enum):
     a_faire = "a_faire"
     terminee = "terminee"
+
+
+class ActionStatus(str, enum.Enum):
+    en_attente = "en_attente"
+    approuvee = "approuvee"
+    rejetee = "rejetee"
+    executee = "executee"
 
 
 class Mission(Base):
@@ -40,6 +48,9 @@ class Mission(Base):
     )
     documents = relationship(
         "Document", back_populates="mission", cascade="all, delete-orphan", order_by="Document.id"
+    )
+    actions = relationship(
+        "Action", back_populates="mission", cascade="all, delete-orphan", order_by="Action.id"
     )
 
 
@@ -80,3 +91,18 @@ class Document(Base):
     date_creation = Column(DateTime, default=datetime.utcnow)
 
     mission = relationship("Mission", back_populates="documents")
+
+
+class Action(Base):
+    __tablename__ = "actions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mission_id = Column(Integer, ForeignKey("missions.id"), nullable=False)
+    type = Column(String, nullable=False)
+    destinataire = Column(String, nullable=False)
+    sujet = Column(String, nullable=False)
+    contenu = Column(Text, nullable=False)
+    statut = Column(Enum(ActionStatus), nullable=False, default=ActionStatus.en_attente)
+    date_creation = Column(DateTime, default=datetime.utcnow)
+
+    mission = relationship("Mission", back_populates="actions")

@@ -15,6 +15,7 @@ client = OpenAI(
 
 MODEL = "qwen-plus"
 RETRY_DELAY_SECONDS = 2
+DEFAULT_TEST_RECIPIENT = os.getenv("ACTION_TEST_RECIPIENT", "test@exemple.com")
 
 DISCOVERY_COMPLETE_TAG = "[DISCOVERY_COMPLETE]"
 
@@ -199,3 +200,62 @@ def generate_documents(
         for d in documents
         if isinstance(d, dict) and d.get("titre") and d.get("contenu")
     ]
+
+
+ACTION_SYSTEM_PROMPT = f"""Tu es Orion, Chief of Staff IA. À partir d'une mission déjà cadrée, planifiée et documentée, tu proposes UNE action concrète et immédiatement exécutable pour faire avancer la mission : l'envoi d'un email.
+
+Réponds UNIQUEMENT avec un objet JSON strictement valide, de cette forme exacte :
+{{"destinataire": "...", "sujet": "...", "contenu": "..."}}
+
+Règles :
+- Une seule action, un seul email. Choisis le destinataire logique le plus pertinent pour faire avancer CETTE mission précise (ex. un candidat ou une agence de recrutement, un prestataire événementiel, une agence marketing, un fournisseur — déduis-le du contexte réel, n'applique aucun gabarit fixe).
+- Si un destinataire réel (nom, entreprise, adresse email explicite) a été mentionné par l'utilisateur dans la conversation, utilise-le. Sinon, utilise l'adresse de test suivante, telle quelle : {DEFAULT_TEST_RECIPIENT}
+- "sujet" : court, concret, professionnel.
+- "contenu" : un email complet, rédigé, prêt à être envoyé tel quel — pas un brouillon vague. Ton professionnel et direct (pas de formules enthousiastes du type "Bien sûr !" ou "Avec plaisir !"). Appuie-toi sur les documents déjà générés comme base factuelle quand c'est pertinent (ex. reprendre les informations d'une offre de mission dans l'email au candidat). Termine par une formule de politesse sobre et une signature générique ("L'équipe" ou similaire, pas de nom inventé).
+{DATE_RULE}
+- Aucun texte hors du JSON. Pas de markdown autour du JSON, pas de blocs ```json, pas de commentaire."""
+
+
+def propose_action(
+    mission_objectif: str | None, conversation_summary: str, documents: list[dict]
+) -> dict | None:
+    docs_text = (
+        "\n".join(f"- [{d['type']}] {d['titre']}" for d in documents) or "(aucun document)"
+    )
+    user_prompt = (
+        f"Objectif de la mission : {mission_objectif or 'non précisé'}\n\n"
+        f"Synthèse de la phase de découverte :\n{conversation_summary}\n\n"
+        f"Documents déjà générés :\n{docs_text}\n\n"
+        "Propose l'action email au format JSON demandé."
+    )
+    messages = [
+        {"role": "system", "content": ACTION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    try:
+        response = _create_completion(messages, json_mode=True)
+    except Exception:
+        try:
+            response = _create_completion(messages, json_mode=False)
+        except Exception as exc:
+            raise OrionAPIError(
+                "La proposition d'action a échoué après deux tentatives. Réessaie dans un instant."
+            ) from exc
+
+    raw = response.choices[0].message.content
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        data = json.loads(match.group(0)) if match else {}
+
+    destinataire = (data.get("destinataire") or "").strip()
+    sujet = (data.get("sujet") or "").strip()
+    contenu = (data.get("contenu") or "").strip()
+
+    if not (destinataire and sujet and contenu):
+        return None
+
+    return {"type": "email", "destinataire": destinataire, "sujet": sujet, "contenu": contenu}

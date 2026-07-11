@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from models import MessageRole, MissionStatus, TaskStatus
+from models import ActionStatus, MessageRole, MissionStatus, TaskStatus
 
 
 class MissionCreate(BaseModel):
@@ -56,6 +56,7 @@ class ChatResponse(BaseModel):
     tasks_created: int = 0
     documents_generated: bool = False
     documents_created: int = 0
+    action_proposed: bool = False
 
     class Config:
         from_attributes = True
@@ -84,3 +85,31 @@ class DocumentOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ActionOut(BaseModel):
+    id: int
+    mission_id: int
+    type: str
+    destinataire: str
+    sujet: str
+    contenu: str
+    statut: ActionStatus
+    date_creation: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ActionApprovalResponse(BaseModel):
+    action: ActionOut
+    simulated: bool
+    message: str
+
+
+class RetryResponse(BaseModel):
+    plan_generated: bool = False
+    tasks_created: int = 0
+    documents_generated: bool = False
+    documents_created: int = 0
+    action_proposed: bool = False
