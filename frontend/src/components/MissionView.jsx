@@ -1,22 +1,35 @@
+import { useEffect, useState } from "react";
 import OrionChat from "./OrionChat";
 import TimelineCard from "./rail/TimelineCard";
+import PlanCard from "./rail/PlanCard";
 import DocumentsCard from "./rail/DocumentsCard";
 import ActionsCard from "./rail/ActionsCard";
+import { getTasks } from "../api";
 
 const STATUS_PROGRESS = {
   nouvelle: 8,
-  en_cours: 45,
+  en_cours: 35,
+  plan_pret: 60,
   terminee: 100,
 };
 
 const STATUS_LABEL = {
   nouvelle: "Nouvelle",
   en_cours: "En cours",
+  plan_pret: "Plan prêt",
   terminee: "Terminée",
 };
 
 export default function MissionView({ mission, onMissionUpdated }) {
   const progress = STATUS_PROGRESS[mission.statut] ?? 8;
+  const [tasks, setTasks] = useState([]);
+  const [planGenerating, setPlanGenerating] = useState(false);
+
+  useEffect(() => {
+    getTasks(mission.id)
+      .then(setTasks)
+      .catch(() => setTasks([]));
+  }, [mission.id, mission.statut]);
 
   return (
     <div className="mission-view">
@@ -39,10 +52,15 @@ export default function MissionView({ mission, onMissionUpdated }) {
 
       <div className="mission-body">
         <div className="mission-chat-col">
-          <OrionChat missionId={mission.id} onDiscoveryComplete={onMissionUpdated} />
+          <OrionChat
+            missionId={mission.id}
+            onDiscoveryComplete={onMissionUpdated}
+            onPlanGeneratingChange={setPlanGenerating}
+          />
         </div>
         <aside className="mission-rail">
-          <TimelineCard statut={mission.statut} />
+          <TimelineCard statut={mission.statut} planGenerating={planGenerating} />
+          <PlanCard tasks={tasks} />
           <DocumentsCard />
           <ActionsCard />
         </aside>

@@ -36,3 +36,7 @@ export function sendChatMessage(missionId, contenu) {
     body: JSON.stringify({ contenu }),
   });
 }
+
+export function getTasks(missionId) {
+  return request(`/missions/${missionId}/tasks`);
+}

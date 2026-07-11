@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 from database import get_db
-from orion import DISCOVERY_COMPLETE_TAG, ask_orion
+from orion import DISCOVERY_COMPLETE_TAG, ask_orion, generate_plan
 
 router = APIRouter(prefix="/missions", tags=["missions"])
 
@@ -73,8 +73,26 @@ def chat_with_orion(mission_id: int, payload: schemas.ChatMessageIn, db: Session
     )
     db.add(assistant_message)
 
+    plan_generated = False
+    tasks_created = 0
+
     if discovery_complete and mission.statut == models.MissionStatus.nouvelle:
         mission.statut = models.MissionStatus.en_cours
+
+        plan_tasks = generate_plan(mission.objectif, clean_reply)
+        for ordre, task_data in enumerate(plan_tasks):
+            db.add(
+                models.Task(
+                    mission_id=mission_id,
+                    titre=task_data["titre"],
+                    description=task_data.get("description"),
+                    ordre=ordre,
+                )
+            )
+        tasks_created = len(plan_tasks)
+        if tasks_created > 0:
+            plan_generated = True
+            mission.statut = models.MissionStatus.plan_pret
 
     db.commit()
     db.refresh(assistant_message)
@@ -86,4 +104,19 @@ def chat_with_orion(mission_id: int, payload: schemas.ChatMessageIn, db: Session
         contenu=assistant_message.contenu,
         date_creation=assistant_message.date_creation,
         discovery_complete=discovery_complete,
+        plan_generated=plan_generated,
+        tasks_created=tasks_created,
+    )
+
+
+@router.get("/{mission_id}/tasks", response_model=list[schemas.TaskOut])
+def list_tasks(mission_id: int, db: Session = Depends(get_db)):
+    mission = db.query(models.Mission).filter(models.Mission.id == mission_id).first()
+    if mission is None:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    return (
+        db.query(models.Task)
+        .filter(models.Task.mission_id == mission_id)
+        .order_by(models.Task.ordre)
+        .all()
     )

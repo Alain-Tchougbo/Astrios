@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from models import MessageRole, MissionStatus
+from models import MessageRole, MissionStatus, TaskStatus
 
 
 class MissionCreate(BaseModel):
@@ -52,6 +52,21 @@ class ChatResponse(BaseModel):
     contenu: str
     date_creation: datetime
     discovery_complete: bool
+    plan_generated: bool = False
+    tasks_created: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class TaskOut(BaseModel):
+    id: int
+    mission_id: int
+    titre: str
+    description: str | None
+    ordre: int
+    statut: TaskStatus
+    date_creation: datetime
 
     class Config:
         from_attributes = True

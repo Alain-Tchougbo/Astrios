@@ -8,7 +8,11 @@ const WELCOME = {
     "Bonjour, je suis Orion. Décris-moi ta mission et je t'aiderai à la structurer.",
 };
 
-export default function OrionChat({ missionId, onDiscoveryComplete }) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export default function OrionChat({ missionId, onDiscoveryComplete, onPlanGeneratingChange }) {
   const [messages, setMessages] = useState([WELCOME]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
@@ -56,6 +60,25 @@ export default function OrionChat({ missionId, onDiscoveryComplete }) {
     try {
       const reply = await sendChatMessage(missionId, text);
       setMessages((prev) => [...prev, { role: "assistant", contenu: reply.contenu }]);
+
+      if (reply.discovery_complete && reply.plan_generated) {
+        onPlanGeneratingChange?.(true);
+        setMessages((prev) => [
+          ...prev,
+          { role: "system", contenu: "Génération du plan en cours…" },
+        ]);
+        await sleep(700);
+        const count = reply.tasks_created;
+        setMessages((prev) => [
+          ...prev.slice(0, -1),
+          {
+            role: "system",
+            contenu: `Plan généré : ${count} tâche${count > 1 ? "s" : ""} créée${count > 1 ? "s" : ""}.`,
+          },
+        ]);
+        onPlanGeneratingChange?.(false);
+      }
+
       if (reply.discovery_complete) {
         onDiscoveryComplete?.();
       }

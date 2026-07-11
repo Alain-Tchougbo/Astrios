@@ -11,11 +11,12 @@ const STEPS = [
 const STATUS_STEP = {
   nouvelle: 0,
   en_cours: 1,
+  plan_pret: 2,
   terminee: 4,
 };
 
-export default function TimelineCard({ statut }) {
-  const currentStep = STATUS_STEP[statut] ?? 0;
+export default function TimelineCard({ statut, planGenerating }) {
+  const currentStep = planGenerating ? 1 : STATUS_STEP[statut] ?? 0;
 
   return (
     <section className="rail-section">

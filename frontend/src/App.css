@@ -299,6 +299,17 @@
   box-shadow: 0 0 8px var(--accent-bright);
 }
 
+.mission-status-badge.plan_pret {
+  color: var(--accent-text);
+  border-color: rgba(23, 180, 130, 0.3);
+  background: var(--accent-dim);
+}
+
+.mission-status-badge.plan_pret .status-dot {
+  background: var(--accent-bright);
+  box-shadow: 0 0 8px var(--accent-bright);
+}
+
 .mission-status-badge.terminee {
   color: var(--accent-bright);
   border-color: rgba(23, 180, 130, 0.35);
@@ -394,6 +405,18 @@
 
 .chat-message.user {
   justify-content: flex-end;
+}
+
+.chat-message.system {
+  justify-content: center;
+}
+
+.chat-message.system .chat-bubble {
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-style: italic;
+  text-align: center;
 }
 
 .chat-avatar {
@@ -592,6 +615,52 @@
   font-size: 13px;
   font-weight: 400;
   line-height: 1.5;
+}
+
+/* Plan / task list */
+.task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.task-checkbox {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 2px solid var(--border-hover);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.task-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.task-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.task-description {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  line-height: 1.45;
 }
 
 /* Timeline stepper */
