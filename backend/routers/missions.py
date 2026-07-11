@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 from database import get_db
-from orion import DISCOVERY_COMPLETE_TAG, ask_orion, generate_plan
+from orion import DISCOVERY_COMPLETE_TAG, OrionAPIError, ask_orion, generate_documents, generate_plan
 
 router = APIRouter(prefix="/missions", tags=["missions"])
 
@@ -64,7 +64,11 @@ def chat_with_orion(mission_id: int, payload: schemas.ChatMessageIn, db: Session
     )
     qwen_history = [{"role": m.role.value, "content": m.contenu} for m in history]
 
-    raw_reply = ask_orion(qwen_history)
+    try:
+        raw_reply = ask_orion(qwen_history)
+    except OrionAPIError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     discovery_complete = DISCOVERY_COMPLETE_TAG in raw_reply
     clean_reply = raw_reply.replace(DISCOVERY_COMPLETE_TAG, "").strip()
 
@@ -72,14 +76,23 @@ def chat_with_orion(mission_id: int, payload: schemas.ChatMessageIn, db: Session
         mission_id=mission_id, role=models.MessageRole.assistant, contenu=clean_reply
     )
     db.add(assistant_message)
+    db.commit()
+    db.refresh(assistant_message)
 
     plan_generated = False
     tasks_created = 0
+    documents_generated = False
+    documents_created = 0
 
     if discovery_complete and mission.statut == models.MissionStatus.nouvelle:
         mission.statut = models.MissionStatus.en_cours
 
-        plan_tasks = generate_plan(mission.objectif, clean_reply)
+        try:
+            plan_tasks = generate_plan(mission.objectif, clean_reply)
+        except OrionAPIError as exc:
+            db.commit()
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
         for ordre, task_data in enumerate(plan_tasks):
             db.add(
                 models.Task(
@@ -94,6 +107,26 @@ def chat_with_orion(mission_id: int, payload: schemas.ChatMessageIn, db: Session
             plan_generated = True
             mission.statut = models.MissionStatus.plan_pret
 
+            try:
+                plan_documents = generate_documents(mission.objectif, clean_reply, plan_tasks)
+            except OrionAPIError as exc:
+                db.commit()
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+            for doc_data in plan_documents:
+                db.add(
+                    models.Document(
+                        mission_id=mission_id,
+                        titre=doc_data["titre"],
+                        type=doc_data["type"],
+                        contenu=doc_data["contenu"],
+                    )
+                )
+            documents_created = len(plan_documents)
+            if documents_created > 0:
+                documents_generated = True
+                mission.statut = models.MissionStatus.documents_prets
+
     db.commit()
     db.refresh(assistant_message)
 
@@ -106,6 +139,8 @@ def chat_with_orion(mission_id: int, payload: schemas.ChatMessageIn, db: Session
         discovery_complete=discovery_complete,
         plan_generated=plan_generated,
         tasks_created=tasks_created,
+        documents_generated=documents_generated,
+        documents_created=documents_created,
     )
 
 
@@ -120,3 +155,28 @@ def list_tasks(mission_id: int, db: Session = Depends(get_db)):
         .order_by(models.Task.ordre)
         .all()
     )
+
+
+@router.get("/{mission_id}/documents", response_model=list[schemas.DocumentOut])
+def list_documents(mission_id: int, db: Session = Depends(get_db)):
+    mission = db.query(models.Mission).filter(models.Mission.id == mission_id).first()
+    if mission is None:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    return (
+        db.query(models.Document)
+        .filter(models.Document.mission_id == mission_id)
+        .order_by(models.Document.id)
+        .all()
+    )
+
+
+@router.get("/{mission_id}/documents/{doc_id}", response_model=schemas.DocumentOut)
+def get_document(mission_id: int, doc_id: int, db: Session = Depends(get_db)):
+    document = (
+        db.query(models.Document)
+        .filter(models.Document.mission_id == mission_id, models.Document.id == doc_id)
+        .first()
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    return document

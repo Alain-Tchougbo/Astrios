@@ -11,6 +11,7 @@ class MissionStatus(str, enum.Enum):
     nouvelle = "nouvelle"
     en_cours = "en_cours"
     plan_pret = "plan_pret"
+    documents_prets = "documents_prets"
     terminee = "terminee"
 
 
@@ -36,6 +37,9 @@ class Mission(Base):
     messages = relationship("Message", back_populates="mission", cascade="all, delete-orphan")
     tasks = relationship(
         "Task", back_populates="mission", cascade="all, delete-orphan", order_by="Task.ordre"
+    )
+    documents = relationship(
+        "Document", back_populates="mission", cascade="all, delete-orphan", order_by="Document.id"
     )
 
 
@@ -63,3 +67,16 @@ class Task(Base):
     date_creation = Column(DateTime, default=datetime.utcnow)
 
     mission = relationship("Mission", back_populates="tasks")
+
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mission_id = Column(Integer, ForeignKey("missions.id"), nullable=False)
+    titre = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    contenu = Column(Text, nullable=False)
+    date_creation = Column(DateTime, default=datetime.utcnow)
+
+    mission = relationship("Mission", back_populates="documents")

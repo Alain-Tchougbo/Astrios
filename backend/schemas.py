@@ -54,6 +54,8 @@ class ChatResponse(BaseModel):
     discovery_complete: bool
     plan_generated: bool = False
     tasks_created: int = 0
+    documents_generated: bool = False
+    documents_created: int = 0
 
     class Config:
         from_attributes = True
@@ -66,6 +68,18 @@ class TaskOut(BaseModel):
     description: str | None
     ordre: int
     statut: TaskStatus
+    date_creation: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DocumentOut(BaseModel):
+    id: int
+    mission_id: int
+    titre: str
+    type: str
+    contenu: str
     date_creation: datetime
 
     class Config:
