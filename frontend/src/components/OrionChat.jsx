@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Compass, Paperclip, Send } from "lucide-react";
-import { getMessages, sendChatMessage } from "../api";
+import { Compass, Paperclip, RotateCcw, Send } from "lucide-react";
+import { getMessages, retryMission, sendChatMessage } from "../api";
 
 const WELCOME = {
   role: "assistant",
@@ -8,14 +8,31 @@ const WELCOME = {
     "Bonjour, je suis Orion. Décris-moi ta mission et je t'aiderai à la structurer.",
 };
 
+// Messages affichés en cascade pendant une attente longue (plan/documents/action),
+// pour rassurer visuellement même quand l'appel réel prend plusieurs dizaines de secondes.
+const THINKING_STAGES = [
+  { after: 8000, text: "Analyse du contexte…" },
+  { after: 25000, text: "Structuration du plan…" },
+  { after: 45000, text: "Rédaction des documents…" },
+  { after: 65000, text: "Finalisation de l'action proposée…" },
+  { after: 90000, text: "Encore un instant, la génération peut prendre jusqu'à quelques minutes…" },
+];
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export default function OrionChat({ missionId, onDiscoveryComplete, onPlanGeneratingChange }) {
+export default function OrionChat({
+  missionId,
+  missionStatut,
+  onDiscoveryComplete,
+  onPlanGeneratingChange,
+  onDocumentsGeneratingChange,
+}) {
   const [messages, setMessages] = useState([WELCOME]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
+  const [thinkingLabel, setThinkingLabel] = useState(null);
   const messagesRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -48,6 +65,17 @@ export default function OrionChat({ missionId, onDiscoveryComplete, onPlanGenera
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input]);
 
+  useEffect(() => {
+    if (!thinking) {
+      setThinkingLabel(null);
+      return;
+    }
+    const timers = THINKING_STAGES.map((stage) =>
+      setTimeout(() => setThinkingLabel(stage.text), stage.after)
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [thinking]);
+
   async function handleSend(e) {
     e.preventDefault();
     const text = input.trim();
@@ -79,13 +107,84 @@ export default function OrionChat({ missionId, onDiscoveryComplete, onPlanGenera
         onPlanGeneratingChange?.(false);
       }
 
+      if (reply.discovery_complete && reply.documents_generated) {
+        onDocumentsGeneratingChange?.(true);
+        setMessages((prev) => [
+          ...prev,
+          { role: "system", contenu: "Génération des documents en cours…" },
+        ]);
+        await sleep(700);
+        const docCount = reply.documents_created;
+        setMessages((prev) => [
+          ...prev.slice(0, -1),
+          {
+            role: "system",
+            contenu: `Documents générés : ${docCount} document${docCount > 1 ? "s" : ""} créé${docCount > 1 ? "s" : ""}.`,
+          },
+        ]);
+        onDocumentsGeneratingChange?.(false);
+      }
+
+      if (reply.discovery_complete && reply.action_proposed) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "system",
+            contenu: "Action proposée : un email est en attente de ton approbation dans le panneau Actions.",
+          },
+        ]);
+      }
+
       if (reply.discovery_complete) {
         onDiscoveryComplete?.();
       }
-    } catch {
+    } catch (err) {
+      const retryable = missionStatut != null && missionStatut !== "nouvelle";
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", contenu: "Une erreur est survenue. Réessaie." },
+        {
+          role: "error",
+          contenu: err.message || "Une erreur est survenue.",
+          retry: retryable,
+        },
+      ]);
+    } finally {
+      setThinking(false);
+    }
+  }
+
+  async function handleRetry(failedMessage) {
+    setThinking(true);
+    try {
+      const result = await retryMission(missionId);
+      setMessages((prev) => {
+        const cleared = prev.map((m) => (m === failedMessage ? { ...m, retry: false } : m));
+        const confirmations = [];
+        if (result.plan_generated && result.tasks_created > 0) {
+          confirmations.push({
+            role: "system",
+            contenu: `Plan généré : ${result.tasks_created} tâche${result.tasks_created > 1 ? "s" : ""} créée${result.tasks_created > 1 ? "s" : ""}.`,
+          });
+        }
+        if (result.documents_generated && result.documents_created > 0) {
+          confirmations.push({
+            role: "system",
+            contenu: `Documents générés : ${result.documents_created} document${result.documents_created > 1 ? "s" : ""} créé${result.documents_created > 1 ? "s" : ""}.`,
+          });
+        }
+        if (result.action_proposed) {
+          confirmations.push({
+            role: "system",
+            contenu: "Action proposée : un email est en attente de ton approbation dans le panneau Actions.",
+          });
+        }
+        return [...cleared, ...confirmations];
+      });
+      onDiscoveryComplete?.();
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev.map((m) => (m === failedMessage ? { ...m, retry: false } : m)),
+        { role: "error", contenu: err.message || "La relance a échoué.", retry: true },
       ]);
     } finally {
       setThinking(false);
@@ -109,7 +208,20 @@ export default function OrionChat({ missionId, onDiscoveryComplete, onPlanGenera
                 <Compass size={15} strokeWidth={2.25} />
               </div>
             )}
-            <div className="chat-bubble">{m.contenu}</div>
+            <div className="chat-bubble">
+              {m.contenu}
+              {m.retry && (
+                <button
+                  type="button"
+                  className="chat-retry-btn"
+                  disabled={thinking}
+                  onClick={() => handleRetry(m)}
+                >
+                  <RotateCcw size={13} strokeWidth={2.5} />
+                  Réessayer
+                </button>
+              )}
+            </div>
           </div>
         ))}
         {thinking && (
@@ -121,6 +233,7 @@ export default function OrionChat({ missionId, onDiscoveryComplete, onPlanGenera
               <span className="dot" />
               <span className="dot" />
               <span className="dot" />
+              {thinkingLabel && <span className="chat-thinking-label">{thinkingLabel}</span>}
             </div>
           </div>
         )}

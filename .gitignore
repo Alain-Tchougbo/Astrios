@@ -225,3 +225,4 @@ frontend/dist/
 backend/astrios.db
 backend/uvicorn.log
 frontend/vite.log
+backend/google_credentials.json
