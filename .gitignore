@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+
+# Astrios backend DB
+backend/astrios.db
+backend/uvicorn.log
+frontend/vite.log

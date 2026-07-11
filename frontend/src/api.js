@@ -25,3 +25,14 @@ export function createMission(titre, objectif) {
     body: JSON.stringify({ titre, objectif }),
   });
 }
+
+export function getMessages(missionId) {
+  return request(`/missions/${missionId}/messages`);
+}
+
+export function sendChatMessage(missionId, contenu) {
+  return request(`/missions/${missionId}/chat`, {
+    method: "POST",
+    body: JSON.stringify({ contenu }),
+  });
+}

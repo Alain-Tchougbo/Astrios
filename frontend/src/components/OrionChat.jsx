@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Compass, Paperclip, Send } from "lucide-react";
+import { getMessages, sendChatMessage } from "../api";
 
 const WELCOME = {
   role: "assistant",
@@ -7,7 +8,7 @@ const WELCOME = {
     "Bonjour, je suis Orion. Décris-moi ta mission et je t'aiderai à la structurer.",
 };
 
-export default function OrionChat({ missionId }) {
+export default function OrionChat({ missionId, onDiscoveryComplete }) {
   const [messages, setMessages] = useState([WELCOME]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
@@ -15,8 +16,19 @@ export default function OrionChat({ missionId }) {
   const textareaRef = useRef(null);
 
   useEffect(() => {
-    setMessages([WELCOME]);
+    let cancelled = false;
     setInput("");
+    getMessages(missionId)
+      .then((history) => {
+        if (cancelled) return;
+        setMessages(history.length > 0 ? history : [WELCOME]);
+      })
+      .catch(() => {
+        if (!cancelled) setMessages([WELCOME]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [missionId]);
 
   useEffect(() => {
@@ -32,26 +44,29 @@ export default function OrionChat({ missionId }) {
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input]);
 
-  function handleSend(e) {
+  async function handleSend(e) {
     e.preventDefault();
     const text = input.trim();
-    if (!text) return;
+    if (!text || thinking) return;
 
     setMessages((prev) => [...prev, { role: "user", contenu: text }]);
     setInput("");
     setThinking(true);
 
-    // Placeholder en attendant le branchement de l'API de chat / Qwen.
-    setTimeout(() => {
-      setThinking(false);
+    try {
+      const reply = await sendChatMessage(missionId, text);
+      setMessages((prev) => [...prev, { role: "assistant", contenu: reply.contenu }]);
+      if (reply.discovery_complete) {
+        onDiscoveryComplete?.();
+      }
+    } catch {
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          contenu: "(connexion à Orion pas encore branchée sur cette mission)",
-        },
+        { role: "assistant", contenu: "Une erreur est survenue. Réessaie." },
       ]);
-    }, 900);
+    } finally {
+      setThinking(false);
+    }
   }
 
   function handleKeyDown(e) {
@@ -105,7 +120,7 @@ export default function OrionChat({ missionId }) {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
         />
-        <button type="submit" className="chat-send" disabled={!input.trim()} aria-label="Envoyer">
+        <button type="submit" className="chat-send" disabled={!input.trim() || thinking} aria-label="Envoyer">
           <Send size={16} strokeWidth={2.25} />
         </button>
       </form>

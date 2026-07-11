@@ -52,6 +52,17 @@ function App() {
     }
   }
 
+  async function handleMissionUpdated() {
+    if (selectedId == null) return;
+    try {
+      const detail = await getMission(selectedId);
+      setSelectedMission(detail);
+      setMissions((prev) => prev.map((m) => (m.id === detail.id ? { ...m, statut: detail.statut } : m)));
+    } catch {
+      setError("Impossible de rafraîchir cette mission.");
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -63,7 +74,7 @@ function App() {
       <main className="app-main">
         {error && <div className="app-error">{error}</div>}
         {selectedMission ? (
-          <MissionView mission={selectedMission} />
+          <MissionView mission={selectedMission} onMissionUpdated={handleMissionUpdated} />
         ) : (
           <EmptyState onCreate={handleCreate} creating={creating} />
         )}

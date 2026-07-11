@@ -15,7 +15,7 @@ const STATUS_LABEL = {
   terminee: "Terminée",
 };
 
-export default function MissionView({ mission }) {
+export default function MissionView({ mission, onMissionUpdated }) {
   const progress = STATUS_PROGRESS[mission.statut] ?? 8;
 
   return (
@@ -39,7 +39,7 @@ export default function MissionView({ mission }) {
 
       <div className="mission-body">
         <div className="mission-chat-col">
-          <OrionChat missionId={mission.id} />
+          <OrionChat missionId={mission.id} onDiscoveryComplete={onMissionUpdated} />
         </div>
         <aside className="mission-rail">
           <TimelineCard statut={mission.statut} />
