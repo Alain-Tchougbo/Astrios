@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import OrionChat from "./OrionChat";
 import DocumentViewer from "./DocumentViewer";
 import TimelineCard from "./rail/TimelineCard";
@@ -6,6 +7,7 @@ import PlanCard from "./rail/PlanCard";
 import DocumentsCard from "./rail/DocumentsCard";
 import ActionsCard from "./rail/ActionsCard";
 import { getActions, getDocument, getDocuments, getTasks } from "../api";
+import { useMissionRenameDelete } from "../hooks/useMissionRenameDelete";
 
 const STATUS_PROGRESS = {
   nouvelle: 10,
@@ -25,7 +27,11 @@ const STATUS_LABEL = {
   terminee: "Terminée",
 };
 
-export default function MissionView({ mission, onMissionUpdated }) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export default function MissionView({ mission, onMissionUpdated, onMissionRenamed, onMissionDeleted }) {
   const progress = STATUS_PROGRESS[mission.statut] ?? 10;
   const [tasks, setTasks] = useState([]);
   const [documents, setDocuments] = useState([]);
@@ -33,6 +39,15 @@ export default function MissionView({ mission, onMissionUpdated }) {
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [planGenerating, setPlanGenerating] = useState(false);
   const [documentsGenerating, setDocumentsGenerating] = useState(false);
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(mission.titre);
+  const cancelingRef = useRef(false);
+  const { rename, remove } = useMissionRenameDelete({
+    onRenamed: onMissionRenamed,
+    onDeleted: onMissionDeleted,
+  });
 
   useEffect(() => {
     getTasks(mission.id)
@@ -48,7 +63,20 @@ export default function MissionView({ mission, onMissionUpdated }) {
 
   useEffect(() => {
     setSelectedDoc(null);
+    setMenuOpen(false);
+    setEditing(false);
+    setEditValue(mission.titre);
   }, [mission.id]);
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (!e.target.closest(".mission-header-menu-wrap")) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   async function handleSelectDocument(doc) {
     try {
@@ -59,36 +87,139 @@ export default function MissionView({ mission, onMissionUpdated }) {
     }
   }
 
+  function handleDocumentUpdated(updatedDoc) {
+    setSelectedDoc(updatedDoc);
+    setDocuments((prev) => prev.map((d) => (d.id === updatedDoc.id ? updatedDoc : d)));
+  }
+
   function handleActionUpdated() {
     getActions(mission.id)
       .then(setActions)
       .catch(() => {});
+    getTasks(mission.id)
+      .then(setTasks)
+      .catch(() => {});
     onMissionUpdated?.();
+  }
+
+  // Coche les tâches liées une par une avec un court délai entre chaque, pour donner
+  // une vraie sensation de progression séquentielle au lieu d'un cochage instantané en
+  // bloc. Purement visuel : le refetch déclenché juste après par ActionsCard (via
+  // onActionUpdated) reste la source de vérité finale.
+  async function handleAllActionsApproved(results) {
+    const taskIds = results
+      .filter((r) => r.success && r.action.task_id)
+      .map((r) => r.action.task_id);
+    for (const taskId of taskIds) {
+      await sleep(450);
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, statut: "terminee" } : t)));
+    }
+  }
+
+  async function commitRename() {
+    const value = editValue;
+    setEditing(false);
+    try {
+      await rename(mission, value);
+    } catch {
+      // échec silencieux : le titre reste inchangé, l'utilisateur peut réessayer
+    }
+  }
+
+  function handleEditKeyDown(e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitRename();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelingRef.current = true;
+      setEditing(false);
+      setEditValue(mission.titre);
+    }
+  }
+
+  function handleEditBlur() {
+    if (cancelingRef.current) {
+      cancelingRef.current = false;
+      return;
+    }
+    commitRename();
+  }
+
+  async function handleDelete() {
+    setMenuOpen(false);
+    try {
+      await remove(mission);
+    } catch {
+      // échec silencieux : la mission reste affichée, l'utilisateur peut réessayer
+    }
   }
 
   return (
     <div className="mission-view">
       <header className="mission-header">
         <div className="mission-header-top">
-          <h1>{mission.titre}</h1>
-          <span className={`mission-status-badge ${mission.statut}`}>
-            <span className="status-dot" />
-            {STATUS_LABEL[mission.statut] ?? mission.statut}
-          </span>
-        </div>
-        {mission.objectif && <p className="mission-objectif">{mission.objectif}</p>}
-        <div className="progress-row">
-          <div className="progress-bar">
-            <div className="progress-bar-fill" style={{ width: `${progress}%` }} />
+          <div className="mission-header-title-group">
+            {editing ? (
+              <input
+                className="mission-header-edit-input"
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onKeyDown={handleEditKeyDown}
+                onBlur={handleEditBlur}
+                autoFocus
+              />
+            ) : (
+              <h1>{mission.titre}</h1>
+            )}
+            <span className={`mission-status-badge ${mission.statut}`}>
+              {STATUS_LABEL[mission.statut] ?? mission.statut}
+            </span>
           </div>
-          <span className="progress-percent">{progress}%</span>
+
+          <div className="mission-header-menu-wrap">
+            <button
+              className="mission-header-menu-btn"
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-label="Options de la mission"
+            >
+              <MoreHorizontal size={18} strokeWidth={2.25} />
+            </button>
+
+            {menuOpen && (
+              <div className="context-menu">
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setEditValue(mission.titre);
+                    setEditing(true);
+                  }}
+                >
+                  <Pencil size={13} strokeWidth={2.25} />
+                  Renommer
+                </button>
+                <button className="context-menu-item danger" onClick={handleDelete}>
+                  <Trash2 size={13} strokeWidth={2.25} />
+                  Supprimer
+                </button>
+              </div>
+            )}
+          </div>
         </div>
+
+        {mission.objectif && <p className="mission-objectif">{mission.objectif}</p>}
       </header>
 
       <div className="mission-body">
         <div className="mission-chat-col">
           {selectedDoc ? (
-            <DocumentViewer doc={selectedDoc} onBack={() => setSelectedDoc(null)} />
+            <DocumentViewer
+              doc={selectedDoc}
+              missionId={mission.id}
+              onBack={() => setSelectedDoc(null)}
+              onDocumentUpdated={handleDocumentUpdated}
+            />
           ) : (
             <OrionChat
               missionId={mission.id}
@@ -104,10 +235,21 @@ export default function MissionView({ mission, onMissionUpdated }) {
             statut={mission.statut}
             planGenerating={planGenerating}
             documentsGenerating={documentsGenerating}
+            progress={progress}
+            actions={actions}
           />
           <PlanCard tasks={tasks} />
-          <DocumentsCard documents={documents} onSelect={handleSelectDocument} />
-          <ActionsCard missionId={mission.id} actions={actions} onActionUpdated={handleActionUpdated} />
+          <DocumentsCard
+            documents={documents}
+            onSelect={handleSelectDocument}
+            missionStatut={mission.statut}
+          />
+          <ActionsCard
+            missionId={mission.id}
+            actions={actions}
+            onActionUpdated={handleActionUpdated}
+            onAllApproved={handleAllActionsApproved}
+          />
         </aside>
       </div>
     </div>

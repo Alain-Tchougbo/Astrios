@@ -6,7 +6,11 @@
       "Bash(curl -s http://localhost:8000/openapi.json)",
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(list\\(d['paths'].keys\\(\\)\\)\\)\")",
       "Bash(npx vite *)",
-      "Bash(curl -s -o /dev/null -w \"vite:%{http_code}\\\\n\" http://localhost:5173)"
+      "Bash(curl -s -o /dev/null -w \"vite:%{http_code}\\\\n\" http://localhost:5173)",
+      "Bash(./venv/Scripts/python.exe -c ' *)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" -X DELETE \"http://localhost:8000/missions/18\")",
+      "Bash(taskkill //F //PID 25868)",
+      "Bash(curl -s -o /dev/null -w \"app:%{http_code}\\\\n\" http://localhost:5173/src/App.jsx)"
     ]
   }
 }

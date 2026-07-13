@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Compass, Paperclip, RotateCcw, Send } from "lucide-react";
+import { Compass, Paperclip, RotateCcw, Send, X } from "lucide-react";
 import { getMessages, retryMission, sendChatMessage } from "../api";
 
 const WELCOME = {
@@ -7,6 +7,9 @@ const WELCOME = {
   contenu:
     "Bonjour, je suis Orion. Décris-moi ta mission et je t'aiderai à la structurer.",
 };
+
+const MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024; // 2 Mo
+const ALLOWED_ATTACHMENT_EXTENSIONS = [".txt", ".pdf"];
 
 // Messages affichés en cascade pendant une attente longue (plan/documents/action),
 // pour rassurer visuellement même quand l'appel réel prend plusieurs dizaines de secondes.
@@ -33,12 +36,17 @@ export default function OrionChat({
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [thinkingLabel, setThinkingLabel] = useState(null);
+  const [attachedFile, setAttachedFile] = useState(null);
+  const [attachmentError, setAttachmentError] = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
   const messagesRef = useRef(null);
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
     setInput("");
+    setSuggestions([]);
     getMessages(missionId)
       .then((history) => {
         if (cancelled) return;
@@ -76,18 +84,46 @@ export default function OrionChat({
     return () => timers.forEach(clearTimeout);
   }, [thinking]);
 
-  async function handleSend(e) {
-    e.preventDefault();
-    const text = input.trim();
-    if (!text || thinking) return;
+  function handleFileSelect(e) {
+    const selected = e.target.files?.[0];
+    e.target.value = "";
+    if (!selected) return;
 
-    setMessages((prev) => [...prev, { role: "user", contenu: text }]);
+    const ext = selected.name.slice(selected.name.lastIndexOf(".")).toLowerCase();
+    if (!ALLOWED_ATTACHMENT_EXTENSIONS.includes(ext)) {
+      setAttachmentError("Format non supporté (.txt ou .pdf uniquement).");
+      return;
+    }
+    if (selected.size > MAX_ATTACHMENT_SIZE) {
+      setAttachmentError("Le fichier dépasse la taille maximale autorisée (2 Mo).");
+      return;
+    }
+
+    setAttachmentError(null);
+    setAttachedFile(selected);
+  }
+
+  function handleRemoveAttachment() {
+    setAttachedFile(null);
+    setAttachmentError(null);
+  }
+
+  async function sendMessage(text, file) {
+    if ((!text && !file) || thinking) return;
+
+    setSuggestions([]);
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", contenu: text || `📎 ${file?.name}` },
+    ]);
     setInput("");
+    setAttachedFile(null);
     setThinking(true);
 
     try {
-      const reply = await sendChatMessage(missionId, text);
+      const reply = await sendChatMessage(missionId, text, file);
       setMessages((prev) => [...prev, { role: "assistant", contenu: reply.contenu }]);
+      setSuggestions(reply.suggestions?.length ? reply.suggestions : []);
 
       if (reply.discovery_complete && reply.plan_generated) {
         onPlanGeneratingChange?.(true);
@@ -126,11 +162,15 @@ export default function OrionChat({
       }
 
       if (reply.discovery_complete && reply.action_proposed) {
+        const count = reply.actions_created;
         setMessages((prev) => [
           ...prev,
           {
             role: "system",
-            contenu: "Action proposée : un email est en attente de ton approbation dans le panneau Actions.",
+            contenu:
+              count > 1
+                ? `${count} actions proposées : en attente de ton approbation dans le panneau Actions.`
+                : "Action proposée : en attente de ton approbation dans le panneau Actions.",
           },
         ]);
       }
@@ -153,6 +193,15 @@ export default function OrionChat({
     }
   }
 
+  function handleSend(e) {
+    e.preventDefault();
+    sendMessage(input.trim(), attachedFile);
+  }
+
+  function handleSuggestionClick(suggestion) {
+    sendMessage(suggestion, null);
+  }
+
   async function handleRetry(failedMessage) {
     setThinking(true);
     try {
@@ -173,9 +222,13 @@ export default function OrionChat({
           });
         }
         if (result.action_proposed) {
+          const count = result.actions_created;
           confirmations.push({
             role: "system",
-            contenu: "Action proposée : un email est en attente de ton approbation dans le panneau Actions.",
+            contenu:
+              count > 1
+                ? `${count} actions proposées : en attente de ton approbation dans le panneau Actions.`
+                : "Action proposée : en attente de ton approbation dans le panneau Actions.",
           });
         }
         return [...cleared, ...confirmations];
@@ -230,20 +283,60 @@ export default function OrionChat({
               <Compass size={15} strokeWidth={2.25} />
             </div>
             <div className="chat-bubble chat-thinking">
-              <span className="dot" />
-              <span className="dot" />
-              <span className="dot" />
-              {thinkingLabel && <span className="chat-thinking-label">{thinkingLabel}</span>}
+              <span className="chat-thinking-shimmer">{thinkingLabel || "Orion réfléchit…"}</span>
             </div>
           </div>
         )}
       </div>
 
+      {suggestions.length > 0 && !thinking && (
+        <div className="chat-suggestions-row">
+          {suggestions.map((suggestion, i) => (
+            <button
+              key={i}
+              type="button"
+              className="chat-suggestion-pill"
+              onClick={() => handleSuggestionClick(suggestion)}
+            >
+              {suggestion}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {(attachedFile || attachmentError) && (
+        <div className="chat-attachment-row">
+          {attachedFile && (
+            <div className="chat-attachment-chip">
+              <Paperclip size={13} strokeWidth={2.25} />
+              <span className="chat-attachment-name">{attachedFile.name}</span>
+              <button
+                type="button"
+                className="chat-attachment-remove"
+                onClick={handleRemoveAttachment}
+                aria-label="Retirer le fichier"
+              >
+                <X size={13} strokeWidth={2.5} />
+              </button>
+            </div>
+          )}
+          {attachmentError && <span className="chat-attachment-error">{attachmentError}</span>}
+        </div>
+      )}
+
       <form className="chat-input-bar" onSubmit={handleSend}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".txt,.pdf"
+          className="chat-file-input"
+          onChange={handleFileSelect}
+        />
         <button
           type="button"
           className="chat-attach-btn"
-          title="Joindre un document (bientôt disponible)"
+          title="Joindre un fichier (.txt, .pdf — 2 Mo max)"
+          onClick={() => fileInputRef.current?.click()}
         >
           <Paperclip size={17} strokeWidth={2.1} />
         </button>
@@ -256,7 +349,12 @@ export default function OrionChat({
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
         />
-        <button type="submit" className="chat-send" disabled={!input.trim() || thinking} aria-label="Envoyer">
+        <button
+          type="submit"
+          className="chat-send"
+          disabled={(!input.trim() && !attachedFile) || thinking}
+          aria-label="Envoyer"
+        >
           <Send size={16} strokeWidth={2.25} />
         </button>
       </form>

@@ -1,4 +1,6 @@
-import { ArrowLeft } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowLeft, Check, Pencil, X } from "lucide-react";
+import { updateDocument } from "../api";
 
 function renderInline(text, keyPrefix) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
@@ -62,7 +64,43 @@ function renderMarkdown(text) {
   });
 }
 
-export default function DocumentViewer({ doc, onBack }) {
+export default function DocumentViewer({ doc, missionId, onBack, onDocumentUpdated }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(doc.contenu);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    setEditing(false);
+    setDraft(doc.contenu);
+    setError(null);
+  }, [doc.id]);
+
+  function handleStartEdit() {
+    setDraft(doc.contenu);
+    setError(null);
+    setEditing(true);
+  }
+
+  function handleCancel() {
+    setEditing(false);
+    setError(null);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await updateDocument(missionId, doc.id, draft);
+      onDocumentUpdated?.(updated);
+      setEditing(false);
+    } catch (err) {
+      setError(err.message || "Échec de l'enregistrement.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="mission-chat document-viewer">
       <div className="document-viewer-header">
@@ -70,12 +108,51 @@ export default function DocumentViewer({ doc, onBack }) {
           <ArrowLeft size={15} strokeWidth={2.25} />
           Retour à la conversation
         </button>
+        {!editing && (
+          <button className="document-edit-btn" onClick={handleStartEdit}>
+            <Pencil size={13} strokeWidth={2.25} />
+            Modifier
+          </button>
+        )}
       </div>
 
       <div className="document-viewer-body">
         <span className="document-type-badge">{doc.type}</span>
         <h2 className="document-viewer-title">{doc.titre}</h2>
-        <div className="document-viewer-content">{renderMarkdown(doc.contenu)}</div>
+
+        {editing ? (
+          <>
+            <textarea
+              className="document-edit-textarea"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              autoFocus
+            />
+            {error && <div className="document-edit-error">{error}</div>}
+            <div className="document-edit-buttons">
+              <button
+                type="button"
+                className="action-approve-btn"
+                disabled={saving}
+                onClick={handleSave}
+              >
+                <Check size={14} strokeWidth={2.5} />
+                Enregistrer
+              </button>
+              <button
+                type="button"
+                className="action-reject-btn"
+                disabled={saving}
+                onClick={handleCancel}
+              >
+                <X size={14} strokeWidth={2.5} />
+                Annuler
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="document-viewer-content">{renderMarkdown(doc.contenu)}</div>
+        )}
       </div>
     </div>
   );

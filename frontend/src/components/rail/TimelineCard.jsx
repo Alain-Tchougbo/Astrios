@@ -17,14 +17,27 @@ const STATUS_STEP = {
   terminee: 4,
 };
 
-export default function TimelineCard({ statut, planGenerating, documentsGenerating }) {
+export default function TimelineCard({
+  statut,
+  planGenerating,
+  documentsGenerating,
+  progress,
+  actions = [],
+}) {
   const currentStep = documentsGenerating ? 2 : planGenerating ? 1 : STATUS_STEP[statut] ?? 0;
+
+  const totalActions = actions.length;
+  const treatedActions = actions.filter((a) => a.statut !== "en_attente").length;
+  const showActionsProgress = statut === "action_en_attente" && totalActions > 1;
 
   return (
     <section className="rail-section">
       <div className="rail-section-header">
         <Milestone size={15} strokeWidth={2.25} />
         <span className="rail-section-title">Timeline</span>
+        {typeof progress === "number" && (
+          <span className="rail-section-summary">{progress}%</span>
+        )}
       </div>
 
       <ul className="timeline-list">
@@ -37,7 +50,14 @@ export default function TimelineCard({ statut, planGenerating, documentsGenerati
                 {done && <Check size={12} strokeWidth={3} />}
                 {active && <span className="timeline-active-dot" />}
               </span>
-              <span className="timeline-label">{step.label}</span>
+              <span className="timeline-label">
+                {step.label}
+                {step.key === "execution" && showActionsProgress && (
+                  <span className="timeline-substep">
+                    {treatedActions}/{totalActions} actions traitées
+                  </span>
+                )}
+              </span>
             </li>
           );
         })}

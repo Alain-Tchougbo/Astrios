@@ -1,10 +1,8 @@
 const API_URL = "http://localhost:8000";
 
-async function request(path, options) {
-  const res = await fetch(`${API_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+export const GOOGLE_LOGIN_URL = `${API_URL}/auth/google/login`;
+
+async function parseResponse(res, path) {
   if (!res.ok) {
     let detail = null;
     try {
@@ -12,9 +10,22 @@ async function request(path, options) {
     } catch {
       // corps de réponse non-JSON ou vide, on garde le message générique
     }
-    throw new Error(detail || `Erreur API ${res.status} sur ${path}`);
+    const error = new Error(detail || `Erreur API ${res.status} sur ${path}`);
+    error.status = res.status;
+    throw error;
+  }
+  if (res.status === 204) {
+    return null;
   }
   return res.json();
+}
+
+async function request(path, options) {
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  return parseResponse(res, path);
 }
 
 export function getMissions() {
@@ -32,15 +43,37 @@ export function createMission(titre, objectif) {
   });
 }
 
+export function updateMission(id, titre) {
+  return request(`/missions/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ titre }),
+  });
+}
+
+export function deleteMission(id) {
+  return request(`/missions/${id}`, {
+    method: "DELETE",
+  });
+}
+
 export function getMessages(missionId) {
   return request(`/missions/${missionId}/messages`);
 }
 
-export function sendChatMessage(missionId, contenu) {
-  return request(`/missions/${missionId}/chat`, {
+export async function sendChatMessage(missionId, contenu, file) {
+  const path = `/missions/${missionId}/chat`;
+  const formData = new FormData();
+  formData.append("contenu", contenu);
+  if (file) {
+    formData.append("file", file);
+  }
+  // Pas de header Content-Type ici : le navigateur doit fixer lui-même le
+  // boundary multipart, un header manuel casserait le parsing côté serveur.
+  const res = await fetch(`${API_URL}${path}`, {
     method: "POST",
-    body: JSON.stringify({ contenu }),
+    body: formData,
   });
+  return parseResponse(res, path);
 }
 
 export function getTasks(missionId) {
@@ -53,6 +86,13 @@ export function getDocuments(missionId) {
 
 export function getDocument(missionId, docId) {
   return request(`/missions/${missionId}/documents/${docId}`);
+}
+
+export function updateDocument(missionId, docId, contenu) {
+  return request(`/missions/${missionId}/documents/${docId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ contenu }),
+  });
 }
 
 export function getActions(missionId) {
@@ -71,8 +111,31 @@ export function rejectAction(missionId, actionId) {
   });
 }
 
+export function excludeAction(missionId, actionId) {
+  return request(`/missions/${missionId}/actions/${actionId}/exclude`, {
+    method: "POST",
+  });
+}
+
+export function approveAllActions(missionId) {
+  return request(`/missions/${missionId}/actions/approve-all`, {
+    method: "POST",
+  });
+}
+
+export function updateAction(missionId, actionId, { destinataire, sujet, contenu }) {
+  return request(`/missions/${missionId}/actions/${actionId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ destinataire, sujet, contenu }),
+  });
+}
+
 export function retryMission(missionId) {
   return request(`/missions/${missionId}/retry`, {
     method: "POST",
   });
+}
+
+export function getGoogleStatus() {
+  return request("/auth/google/status");
 }

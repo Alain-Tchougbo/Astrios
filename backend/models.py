@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Column, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -98,10 +98,12 @@ class Action(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     mission_id = Column(Integer, ForeignKey("missions.id"), nullable=False)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
     type = Column(String, nullable=False)
-    destinataire = Column(String, nullable=False)
-    sujet = Column(String, nullable=False)
-    contenu = Column(Text, nullable=False)
+    destinataire = Column(String, nullable=False, default="")
+    sujet = Column(String, nullable=False, default="")
+    contenu = Column(Text, nullable=False, default="")
+    details = Column(JSON, nullable=True)
     statut = Column(Enum(ActionStatus), nullable=False, default=ActionStatus.en_attente)
     date_creation = Column(DateTime, default=datetime.utcnow)
 

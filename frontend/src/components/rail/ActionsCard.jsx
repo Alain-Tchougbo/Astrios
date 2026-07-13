@@ -1,52 +1,119 @@
 import { useState } from "react";
-import { Check, Mail, X, Zap } from "lucide-react";
-import { approveAction, rejectAction } from "../../api";
+import {
+  Calendar,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  Mail,
+  Pencil,
+  X,
+  Zap,
+} from "lucide-react";
+import { GOOGLE_LOGIN_URL, approveAllActions, excludeAction, updateAction } from "../../api";
 
 const STATUS_LABEL = {
   en_attente: "En attente",
   approuvee: "Approuvée",
-  rejetee: "Rejetée",
-  executee: "Envoyée",
+  rejetee: "Retirée",
+  executee: "Exécutée",
 };
 
-export default function ActionsCard({ missionId, actions, onActionUpdated }) {
-  const [pendingId, setPendingId] = useState(null);
-  const [feedback, setFeedback] = useState(null);
+function formatEventDate(dateStr) {
+  if (!dateStr) return "";
+  // date_debut/date_fin sont des horaires "naïfs" (sans fuseau, ex. "2026-07-22T11:00:00")
+  // envoyés à Google Calendar avec un champ timeZone: "Europe/Paris" séparé — Google les
+  // interprète donc comme des heures murales Europe/Paris, sans ambiguïté.
+  // new Date(dateStr) sans le "Z" interpréterait ces mêmes chiffres comme une heure
+  // locale du fuseau système du navigateur (pas forcément Europe/Paris), ce qui peut
+  // décaler l'heure affichée ici par rapport à celle réellement créée dans Calendar.
+  // En ajoutant "Z" et en formatant avec timeZone: "UTC", on force l'affichage à
+  // reprendre exactement les mêmes chiffres que ceux envoyés à Google, sans aucune
+  // conversion de fuseau.
+  const d = new Date(`${dateStr}Z`);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return d.toLocaleString("fr-FR", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+  });
+}
 
-  async function handleApprove(action) {
-    setPendingId(action.id);
-    setFeedback(null);
+export default function ActionsCard({ missionId, actions, onActionUpdated, onAllApproved }) {
+  const [expanded, setExpanded] = useState(false);
+  const [excludingId, setExcludingId] = useState(null);
+  const [approving, setApproving] = useState(false);
+  const [groupError, setGroupError] = useState(null);
+  const [needsGoogleAuth, setNeedsGoogleAuth] = useState(false);
+  const [results, setResults] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState({ destinataire: "", sujet: "", contenu: "" });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState(null);
+
+  const pendingActions = actions.filter((a) => a.statut === "en_attente");
+  const resolvedActions = actions.filter((a) => a.statut !== "en_attente");
+
+  function handleStartEdit(action) {
+    setEditingId(action.id);
+    setDraft({ destinataire: action.destinataire, sujet: action.sujet, contenu: action.contenu });
+    setEditError(null);
+  }
+
+  function handleCancelEdit() {
+    setEditingId(null);
+    setEditError(null);
+  }
+
+  async function handleSaveEdit(action) {
+    setSavingEdit(true);
+    setEditError(null);
     try {
-      const res = await approveAction(missionId, action.id);
-      setFeedback({ actionId: action.id, type: "success", text: res.message });
+      await updateAction(missionId, action.id, draft);
+      setEditingId(null);
       onActionUpdated?.();
     } catch (err) {
-      setFeedback({
-        actionId: action.id,
-        type: "error",
-        text: err.message || "Échec de l'envoi.",
-      });
+      setEditError(err.message || "Échec de l'enregistrement.");
     } finally {
-      setPendingId(null);
+      setSavingEdit(false);
     }
   }
 
-  async function handleReject(action) {
-    setPendingId(action.id);
-    setFeedback(null);
+  async function handleExclude(action) {
+    setExcludingId(action.id);
+    setGroupError(null);
     try {
-      await rejectAction(missionId, action.id);
-      setFeedback({ actionId: action.id, type: "info", text: "Action rejetée. Aucun email envoyé." });
+      await excludeAction(missionId, action.id);
       onActionUpdated?.();
     } catch (err) {
-      setFeedback({
-        actionId: action.id,
-        type: "error",
-        text: err.message || "Échec du rejet.",
-      });
+      setGroupError(err.message || "Échec du retrait de cette action.");
     } finally {
-      setPendingId(null);
+      setExcludingId(null);
     }
+  }
+
+  async function handleApproveAll() {
+    setApproving(true);
+    setGroupError(null);
+    setNeedsGoogleAuth(false);
+    try {
+      const response = await approveAllActions(missionId);
+      setResults(response.results);
+      await onAllApproved?.(response.results);
+      onActionUpdated?.();
+    } catch (err) {
+      setGroupError(err.message || "Échec de l'exécution.");
+      setNeedsGoogleAuth(err.status === 409);
+    } finally {
+      setApproving(false);
+    }
+  }
+
+  function resultFor(actionId) {
+    return results?.find((r) => r.action.id === actionId) ?? null;
   }
 
   return (
@@ -59,46 +126,194 @@ export default function ActionsCard({ missionId, actions, onActionUpdated }) {
       {actions.length === 0 ? (
         <div className="rail-empty">Aucune action en attente d'approbation.</div>
       ) : (
-        <ul className="action-list">
-          {actions.map((action) => (
-            <li key={action.id} className="action-item">
-              <div className="action-item-header">
-                <Mail size={13} strokeWidth={2.25} />
-                <span className="action-item-status">{STATUS_LABEL[action.statut] ?? action.statut}</span>
+        <>
+          {pendingActions.length > 0 && (
+            <div className="action-group-card">
+              <div className="action-group-header">
+                <div>
+                  <div className="action-group-title">Mission prête à être exécutée</div>
+                  <div className="action-group-subtitle">
+                    {pendingActions.length} action{pendingActions.length > 1 ? "s" : ""} à exécuter
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="action-group-toggle"
+                  onClick={() => setExpanded((v) => !v)}
+                >
+                  Voir le détail
+                  {expanded ? (
+                    <ChevronUp size={14} strokeWidth={2.25} />
+                  ) : (
+                    <ChevronDown size={14} strokeWidth={2.25} />
+                  )}
+                </button>
               </div>
-              <div className="action-item-to">À : {action.destinataire}</div>
-              <div className="action-item-subject">{action.sujet}</div>
-              <p className="action-item-preview">
-                {action.contenu.length > 140 ? `${action.contenu.slice(0, 140)}…` : action.contenu}
-              </p>
 
-              {action.statut === "en_attente" && (
-                <div className="action-item-buttons">
-                  <button
-                    className="action-approve-btn"
-                    disabled={pendingId === action.id}
-                    onClick={() => handleApprove(action)}
-                  >
-                    <Check size={14} strokeWidth={2.5} />
-                    Approuver et envoyer
-                  </button>
-                  <button
-                    className="action-reject-btn"
-                    disabled={pendingId === action.id}
-                    onClick={() => handleReject(action)}
-                  >
-                    <X size={14} strokeWidth={2.5} />
-                    Rejeter
-                  </button>
+              {expanded && (
+                <ul className="action-group-detail">
+                  {pendingActions.map((action) => {
+                    const isEvent = action.type === "calendar_event";
+                    const details = action.details || {};
+                    return (
+                      <li key={action.id} className="action-group-item">
+                        {editingId === action.id ? (
+                          <>
+                            <input
+                              className="action-edit-input"
+                              value={draft.destinataire}
+                              onChange={(e) => setDraft((d) => ({ ...d, destinataire: e.target.value }))}
+                              placeholder="Destinataire"
+                            />
+                            <input
+                              className="action-edit-input"
+                              value={draft.sujet}
+                              onChange={(e) => setDraft((d) => ({ ...d, sujet: e.target.value }))}
+                              placeholder="Sujet"
+                            />
+                            <textarea
+                              className="action-edit-textarea"
+                              value={draft.contenu}
+                              onChange={(e) => setDraft((d) => ({ ...d, contenu: e.target.value }))}
+                            />
+                            {editError && <div className="action-edit-error">{editError}</div>}
+                            <div className="action-item-buttons">
+                              <button
+                                className="action-approve-btn"
+                                disabled={savingEdit}
+                                onClick={() => handleSaveEdit(action)}
+                              >
+                                <Check size={14} strokeWidth={2.5} />
+                                Enregistrer
+                              </button>
+                              <button
+                                className="action-reject-btn"
+                                disabled={savingEdit}
+                                onClick={handleCancelEdit}
+                              >
+                                <X size={14} strokeWidth={2.5} />
+                                Annuler
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="action-item-header">
+                              {isEvent ? (
+                                <Calendar size={13} strokeWidth={2.25} />
+                              ) : (
+                                <Mail size={13} strokeWidth={2.25} />
+                              )}
+                              <span className="action-item-status">{isEvent ? "Événement" : "Email"}</span>
+                            </div>
+
+                            {isEvent ? (
+                              <>
+                                <div className="action-item-subject">{details.titre}</div>
+                                <div className="action-item-to">
+                                  {formatEventDate(details.date_debut)}
+                                  {details.date_fin ? ` → ${formatEventDate(details.date_fin)}` : ""}
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="action-item-to">À : {action.destinataire}</div>
+                                <div className="action-item-subject">{action.sujet}</div>
+                              </>
+                            )}
+
+                            <div className="action-item-buttons">
+                              {!isEvent && (
+                                <button
+                                  type="button"
+                                  className="action-edit-btn"
+                                  onClick={() => handleStartEdit(action)}
+                                  aria-label="Modifier le contenu de l'email"
+                                  title="Modifier le contenu"
+                                >
+                                  <Pencil size={13} strokeWidth={2.25} />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="action-reject-btn"
+                                disabled={excludingId === action.id}
+                                onClick={() => handleExclude(action)}
+                              >
+                                <X size={14} strokeWidth={2.5} />
+                                Retirer de cette exécution
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+
+              {groupError && (
+                <div className="action-feedback error">
+                  {groupError}
+                  {needsGoogleAuth && (
+                    <a className="action-google-connect-btn" href={GOOGLE_LOGIN_URL}>
+                      <ExternalLink size={13} strokeWidth={2.25} />
+                      Se connecter à Google
+                    </a>
+                  )}
                 </div>
               )}
 
-              {feedback?.actionId === action.id && (
-                <div className={`action-feedback ${feedback.type}`}>{feedback.text}</div>
-              )}
-            </li>
-          ))}
-        </ul>
+              <button
+                type="button"
+                className="action-approve-all-btn"
+                disabled={approving}
+                onClick={handleApproveAll}
+              >
+                <Check size={15} strokeWidth={2.5} />
+                {approving ? "Exécution en cours…" : "Approuver et exécuter tout"}
+              </button>
+            </div>
+          )}
+
+          {resolvedActions.length > 0 && (
+            <ul className="action-list action-history">
+              {resolvedActions.map((action) => {
+                const isEvent = action.type === "calendar_event";
+                const details = action.details || {};
+                const result = resultFor(action.id);
+                return (
+                  <li key={action.id} className="action-item">
+                    <div className="action-item-header">
+                      {isEvent ? (
+                        <Calendar size={13} strokeWidth={2.25} />
+                      ) : (
+                        <Mail size={13} strokeWidth={2.25} />
+                      )}
+                      <span className="action-item-status">{STATUS_LABEL[action.statut] ?? action.statut}</span>
+                    </div>
+
+                    {isEvent ? (
+                      <div className="action-item-subject">{details.titre}</div>
+                    ) : (
+                      <>
+                        <div className="action-item-to">À : {action.destinataire}</div>
+                        <div className="action-item-subject">{action.sujet}</div>
+                      </>
+                    )}
+
+                    {result && (
+                      <div className={`action-feedback ${result.success ? "success" : "error"}`}>
+                        {result.success ? "✓ " : "✗ "}
+                        {result.message}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
       )}
     </section>
   );
