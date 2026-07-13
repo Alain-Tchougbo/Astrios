@@ -1,5 +1,7 @@
 # Astrios — AI Chief of Staff
 
+🌐 **Démo en ligne** : http://47.237.178.61
+
 Astrios transforme un objectif exprimé en langage naturel en une **mission entièrement exécutée** : Orion (propulsé par Qwen) comprend l'intention, pose les questions nécessaires, construit un plan, génère les documents utiles, puis exécute des actions réelles (email, événement calendrier) — toujours avec l'approbation explicite de l'humain avant toute exécution.
 
 **Track : Autopilot Agent** — Qwen Cloud Hackathon
