@@ -644,10 +644,11 @@ Pour un élément de type email, exactement :
 {{"type": "email", "task_id": <id de la tâche concernée>, "destinataire": "...", "sujet": "...", "contenu": "..."}}
 
 Pour un élément de type calendar_event, exactement :
-{{"type": "calendar_event", "task_id": <id de la tâche concernée>, "titre": "...", "description": "...", "date_debut": "YYYY-MM-DDTHH:MM:SS", "date_fin": "YYYY-MM-DDTHH:MM:SS"}}
+{{"type": "calendar_event", "task_id": <id de la tâche concernée>, "titre": "...", "description": "...", "date_debut": "YYYY-MM-DDTHH:MM:SS", "date_fin": "YYYY-MM-DDTHH:MM:SS", "participant_email": "..." ou null}}
 
 Règles communes à chaque action proposée :
 - Déduis le destinataire (email) ou l'objet du rendez-vous (événement) le plus pertinent pour CETTE mission à partir du contexte réel — n'applique aucun gabarit fixe.
+- RÈGLE ABSOLUE sur "participant_email" (calendar_event) — correspondance stricte, jamais de déduction : c'est l'adresse email de la personne AVEC QUI ce rendez-vous précis a lieu, UNIQUEMENT si "FAITS ÉTABLIS PENDANT LA DÉCOUVERTE" ou la conversation l'associent explicitement et sans ambiguïté à CET événement précis. Si la mission mentionne plusieurs destinataires pour des raisons différentes (ex. un rendez-vous avec l'un, un email à un autre pour un tout autre sujet), ne mets JAMAIS l'adresse d'une personne non concernée par CE rendez-vous, même si c'est la seule adresse disponible dans la mission. En cas de doute réel, laisse "participant_email" à null plutôt que de deviner — un événement sans participant_email certain sera traité indépendamment de tout email, jamais fusionné au hasard.
 - RÈGLE ABSOLUE sur "email" — jamais d'adresse inventée ou de test : ne propose une action "email" QUE si une adresse email réelle et explicite est disponible pour ce destinataire (dans "FAITS ÉTABLIS PENDANT LA DÉCOUVERTE" ou dans la conversation). Si aucune adresse réelle n'est disponible pour un destinataire, NE PROPOSE PAS d'action "email" pour lui — même si un email semblerait par ailleurs pertinent, l'absence d'adresse réelle doit se traduire par l'absence de cette action, jamais par une adresse de test ou inventée. Le "calendar_event" reste proposable indépendamment si les conditions de date/heure ci-dessus sont réunies.
 - Email "contenu" : complet, rédigé, prêt à être envoyé tel quel — pas un brouillon vague. Termine par une formule de politesse sobre. Signature : si "FAITS ÉTABLIS PENDANT LA DÉCOUVERTE" indique un nom d'expéditeur, signe avec ce nom exact ; sinon signe avec une formule générique neutre ("L'équipe") — ne signe JAMAIS avec un placeholder comme "[Votre prénom]" ou un nom inventé.
 - RÈGLE ABSOLUE — ne jamais affirmer un fait non encore réalisé : au moment où ce texte est rédigé, RIEN n'a encore été envoyé ni créé (ni l'email, ni l'événement). N'écris donc JAMAIS de phrase au passé composé ou au présent affirmant une action déjà accomplie (ex. "j'ai créé l'événement dans l'agenda partagé", "l'invitation a été ajoutée à votre calendrier", "l'événement est dans l'agenda partagé"). Si l'email accompagne un rendez-vous, contente-toi d'inviter et de donner la date/l'heure, et mentionne simplement qu'une invitation à ajouter à l'agenda accompagne le message (ex. "Vous trouverez ci-joint une invitation pour l'ajouter à votre agenda"), sans jamais prétendre que cet ajout a déjà eu lieu.
@@ -682,6 +683,7 @@ def _parse_action_item(data: dict, valid_task_ids: set[int]) -> dict | None:
         description = (data.get("description") or "").strip()
         date_debut = _strip_timezone_suffix((data.get("date_debut") or "").strip())
         date_fin = _strip_timezone_suffix((data.get("date_fin") or "").strip())
+        participant_email = (data.get("participant_email") or "").strip() or None
 
         if not (titre and date_debut and date_fin):
             return None
@@ -693,6 +695,7 @@ def _parse_action_item(data: dict, valid_task_ids: set[int]) -> dict | None:
             "description": description,
             "date_debut": date_debut,
             "date_fin": date_fin,
+            "participant_email": participant_email,
         }
 
     if action_type == "email":

@@ -100,6 +100,13 @@ def _build_action(mission_id: int, action_data: dict) -> models.Action:
                 "description": action_data.get("description", ""),
                 "date_debut": action_data["date_debut"],
                 "date_fin": action_data["date_fin"],
+                # Adresse RÉELLE et certaine de la personne concernée par CET
+                # événement précis, telle que renvoyée par propose_action
+                # ("participant_email" — voir ACTION_SYSTEM_PROMPT_TEMPLATE et la
+                # RÈGLE ABSOLUE de composition des envois). Vide si incertaine :
+                # _resolve_calendar_recipient ne devine jamais à partir d'un autre
+                # email de la mission, voir sa docstring.
+                "participants": action_data.get("participant_email") or "",
             },
         )
     return models.Action(
@@ -269,12 +276,34 @@ def _compute_event_datetimes_from_facts(mission_facts: dict | None) -> tuple[str
     return None
 
 
-def _run_generate_actions(db: Session, mission: models.Mission, conversation_summary: str) -> tuple[int, bool]:
-    """Propose les actions à partir du plan et des documents déjà persistés. Si des
-    actions existent déjà (nouveau besoin apparu après une première génération, ou même
-    après exécution complète), propose_action bascule en mode additif et ne renvoie que
-    les actions manquantes pour ce nouveau besoin — la mission est alors "rouverte"
-    (statut action_en_attente) même si elle était déjà terminee."""
+def _find_missing_email_recipients(db: Session, mission: models.Mission) -> list[dict]:
+    """RÈGLE ABSOLUE de composition des envois : si la mission mentionne N
+    destinataires avec une adresse réelle dans FAITS ÉTABLIS, il doit y avoir N
+    actions email correspondantes (existantes ou nouvellement créées, tous rounds
+    confondus) — sinon un envoi demandé par la mission ne partirait jamais. Retourne
+    les destinataires (dicts {"nom", "email", ...}) qui n'ont ENCORE aucune action
+    email."""
+    destinataires = (mission.mission_facts or {}).get("destinataires") or []
+    covered = {
+        (a.destinataire or "").strip().lower()
+        for a in db.query(models.Action)
+        .filter(models.Action.mission_id == mission.id, models.Action.type == "email")
+        .all()
+    }
+    return [
+        d
+        for d in destinataires
+        if (d.get("email") or "").strip() and (d.get("email") or "").strip().lower() not in covered
+    ]
+
+
+def _propose_and_filter_actions(
+    db: Session, mission: models.Mission, conversation_summary: str, existing_actions: list[models.Action]
+) -> list[dict]:
+    """Appelle propose_action puis applique tous les garde-fous déterministes
+    (adresse réelle, participant_email certain, cohérence documents/mission_facts,
+    anti-doublon) — factorisé pour être appelable plusieurs fois dans le même round
+    (voir _run_generate_actions, tentative de régénération ciblée)."""
     existing_tasks = (
         db.query(models.Task)
         .filter(models.Task.mission_id == mission.id)
@@ -291,13 +320,6 @@ def _run_generate_actions(db: Session, mission: models.Mission, conversation_sum
         {"titre": d.titre, "type": d.type, "contenu": d.contenu, "purpose": d.purpose or ""}
         for d in existing_documents
     ]
-
-    existing_actions = (
-        db.query(models.Action)
-        .filter(models.Action.mission_id == mission.id)
-        .order_by(models.Action.id)
-        .all()
-    )
     existing_actions_data = [
         {"type": a.type, "destinataire": a.destinataire, "titre": (a.details or {}).get("titre")}
         for a in existing_actions
@@ -321,7 +343,11 @@ def _run_generate_actions(db: Session, mission: models.Mission, conversation_sum
     # par une action incomplète avec une adresse de test/inventée). On ne fait plus
     # confiance à Qwen seul pour respecter cette règle : toute action email dont le
     # destinataire ne correspond à aucune adresse connue de mission_facts est rejetée
-    # silencieusement (juste loggée), jamais persistée.
+    # silencieusement (juste loggée), jamais persistée. Même exigence pour le
+    # "participant_email" d'un calendar_event (RÈGLE ABSOLUE de composition des
+    # envois : correspondance stricte par adresse email, jamais une déduction) — s'il
+    # ne correspond à aucun destinataire connu, on le traite comme incertain (None)
+    # plutôt que de faire confiance à une valeur non vérifiable.
     valid_emails = {
         (d.get("email") or "").strip().lower()
         for d in (mission.mission_facts or {}).get("destinataires") or []
@@ -339,6 +365,16 @@ def _run_generate_actions(db: Session, mission: models.Mission, conversation_sum
                     action_data.get("destinataire"),
                 )
                 continue
+        elif action_data["type"] == "calendar_event":
+            participant = (action_data.get("participant_email") or "").strip().lower()
+            if participant and participant not in valid_emails:
+                logger.warning(
+                    "participant_email %r ignoré pour l'événement de la mission %s : absent de "
+                    "mission_facts (correspondance non certaine).",
+                    action_data.get("participant_email"),
+                    mission.id,
+                )
+                action_data["participant_email"] = None
         filtered_actions_data.append(action_data)
     actions_data = filtered_actions_data
 
@@ -396,7 +432,28 @@ def _run_generate_actions(db: Session, mission: models.Mission, conversation_sum
         ) in existing_events:
             continue
         deduped_actions_data.append(action_data)
-    actions_data = deduped_actions_data
+    return deduped_actions_data
+
+
+def _run_generate_actions(db: Session, mission: models.Mission, conversation_summary: str) -> tuple[int, bool, list[dict]]:
+    """Propose les actions à partir du plan et des documents déjà persistés. Si des
+    actions existent déjà (nouveau besoin apparu après une première génération, ou même
+    après exécution complète), propose_action bascule en mode additif et ne renvoie que
+    les actions manquantes pour ce nouveau besoin — la mission est alors "rouverte"
+    (statut action_en_attente) même si elle était déjà terminee.
+
+    RÈGLE ABSOLUE de composition des envois, point 2 : après génération, vérifie que
+    chaque destinataire connu de mission_facts a bien une action email. Sinon, une
+    unique tentative de régénération ciblée est faite ; si ça ne suffit toujours pas,
+    la liste des destinataires orphelins est renvoyée pour être signalée dans le chat
+    plutôt que de laisser un envoi demandé disparaître silencieusement."""
+    existing_actions = (
+        db.query(models.Action)
+        .filter(models.Action.mission_id == mission.id)
+        .order_by(models.Action.id)
+        .all()
+    )
+    actions_data = _propose_and_filter_actions(db, mission, conversation_summary, existing_actions)
 
     for action_data in actions_data:
         db.add(_build_action(mission.id, action_data))
@@ -408,7 +465,42 @@ def _run_generate_actions(db: Session, mission: models.Mission, conversation_sum
         # le comportement attendu pour un ajout incrémental après exécution complète.
         mission.statut = models.MissionStatus.action_en_attente
     db.commit()
-    return actions_created, action_proposed
+
+    missing_recipients = _find_missing_email_recipients(db, mission)
+    if missing_recipients:
+        noms = ", ".join(f"{d.get('nom') or d.get('email')} <{d.get('email')}>" for d in missing_recipients)
+        logger.warning(
+            "Destinataire(s) sans action email pour la mission %s après génération : %s — "
+            "tentative de régénération ciblée.",
+            mission.id,
+            noms,
+        )
+        retry_summary = (
+            f"{conversation_summary}\n\n[Vérification automatique : les destinataires suivants sont "
+            f"mentionnés dans la mission mais n'ont encore AUCUNE action email — corrige ça "
+            f"maintenant en proposant l'action email manquante pour chacun : {noms}]"
+        )
+        existing_actions = (
+            db.query(models.Action)
+            .filter(models.Action.mission_id == mission.id)
+            .order_by(models.Action.id)
+            .all()
+        )
+        try:
+            retry_actions_data = _propose_and_filter_actions(db, mission, retry_summary, existing_actions)
+        except HTTPException:
+            retry_actions_data = []
+
+        for action_data in retry_actions_data:
+            db.add(_build_action(mission.id, action_data))
+        if retry_actions_data:
+            actions_created += len(retry_actions_data)
+            action_proposed = True
+            mission.statut = models.MissionStatus.action_en_attente
+            db.commit()
+        missing_recipients = _find_missing_email_recipients(db, mission)
+
+    return actions_created, action_proposed, missing_recipients
 
 
 @router.post("", response_model=schemas.MissionOut)
@@ -660,7 +752,7 @@ def generate_actions_endpoint(mission_id: int, db: Session = Depends(get_db)):
         )
 
     conversation_summary = _get_conversation_summary(db, mission_id)
-    actions_created, action_proposed = _run_generate_actions(db, mission, conversation_summary)
+    actions_created, action_proposed, missing_recipients = _run_generate_actions(db, mission, conversation_summary)
 
     # Referme la boucle d'une réouverture qui n'aboutit finalement à rien de nouveau :
     # si aucune action n'a été proposée ici ET qu'il n'y a plus aucune action en
@@ -670,7 +762,11 @@ def generate_actions_endpoint(mission_id: int, db: Session = Depends(get_db)):
     # fait alors rien (la mission reste action_en_attente, posé juste au-dessus).
     _maybe_complete_mission(db, mission, mission_id)
     db.commit()
-    return schemas.GenerateActionsResponse(actions_created=actions_created, action_proposed=action_proposed)
+    return schemas.GenerateActionsResponse(
+        actions_created=actions_created,
+        action_proposed=action_proposed,
+        missing_recipients=[d.get("nom") or d.get("email") for d in missing_recipients],
+    )
 
 
 @router.post("/{mission_id}/retry", response_model=schemas.RetryResponse)
@@ -718,7 +814,9 @@ def retry_mission(mission_id: int, db: Session = Depends(get_db)):
         documents_generated = documents_created > 0
 
     if documents_generated and not action_proposed:
-        actions_created, action_proposed = _run_generate_actions(db, mission, conversation_summary)
+        actions_created, action_proposed, _missing_recipients = _run_generate_actions(
+            db, mission, conversation_summary
+        )
 
     return schemas.RetryResponse(
         plan_generated=plan_generated,
@@ -924,25 +1022,26 @@ def _resolve_organizer(mode: str) -> tuple[str, str]:
     return smtp_sender.SMTP_USER, smtp_sender.SENDER_DISPLAY_NAME
 
 
-def _resolve_calendar_recipient(db: Session, mission_id: int, action: models.Action) -> str | None:
-    """En mode serveur, un calendar_event n'a pas de champ "destinataire" dédié (à
-    la différence d'un email) — on cherche une adresse dans le champ libre
-    "participants" de l'action, sinon on retombe sur le destinataire de l'action
-    email de la même mission (cas fréquent : email de confirmation + événement
-    calendrier ciblent la même personne, ex. un entretien candidat)."""
+def _resolve_calendar_recipient(action: models.Action) -> str | None:
+    """RÈGLE ABSOLUE de composition des envois : correspondance stricte par adresse
+    email uniquement, jamais par déduction. Un calendar_event n'a pas de champ
+    "destinataire" dédié (à la différence d'un email) — on cherche une adresse dans
+    le champ "participants" de l'action, renseigné par propose_action via
+    "participant_email" (voir ACTION_SYSTEM_PROMPT_TEMPLATE) UNIQUEMENT quand la
+    mission associe explicitement et sans ambiguïté cette adresse à CET événement
+    précis.
+
+    Bug corrigé : cette fonction retombait auparavant sur "le premier email de la
+    mission" quand aucun participant n'était renseigné — dans une mission à
+    plusieurs destinataires pour des raisons différentes (ex. un rendez-vous avec
+    l'un, un email sans rapport à un autre), ça associait au hasard l'invitation au
+    mauvais email selon l'ordre de la requête SQL. Une correspondance incertaine
+    retourne maintenant None : l'appelant doit alors traiter l'événement
+    séparément plutôt que de deviner (voir _find_matching_email_and_event et
+    _execute_action)."""
     details = action.details or {}
     match = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", details.get("participants") or "")
-    if match:
-        return match.group(0)
-
-    email_action = (
-        db.query(models.Action)
-        .filter(models.Action.mission_id == mission_id, models.Action.type == "email")
-        .first()
-    )
-    if email_action and email_action.destinataire:
-        return email_action.destinataire
-    return None
+    return match.group(0) if match else None
 
 
 def _execute_action(db: Session, mission_id: int, action: models.Action, mode: str) -> str:
@@ -977,7 +1076,7 @@ def _execute_action(db: Session, mission_id: int, action: models.Action, mode: s
     elif mode == "server":
         if action.type == "calendar_event":
             details = action.details or {}
-            recipient = _resolve_calendar_recipient(db, mission_id, action)
+            recipient = _resolve_calendar_recipient(action)
             if not recipient:
                 raise smtp_sender.ServerModeValidationError(
                     "Aucun destinataire déterminable pour l'invitation calendrier — "
@@ -1066,7 +1165,7 @@ def _title_similarity(a: str | None, b: str | None) -> float:
 
 
 def _find_matching_email_and_event(
-    pending_actions: list[models.Action], db: Session, mission_id: int
+    pending_actions: list[models.Action],
 ) -> tuple[models.Action, models.Action] | None:
     """Associe l'email qui correspond le mieux à l'événement en attente pour les
     combiner en un seul envoi (SMTP ou Gmail API selon le mode) au lieu d'envois
@@ -1089,7 +1188,7 @@ def _find_matching_email_and_event(
         return None
 
     event_action = event_actions[0]
-    event_recipient = _resolve_calendar_recipient(db, mission_id, event_action)
+    event_recipient = _resolve_calendar_recipient(event_action)
     if not event_recipient:
         return None
 
@@ -1105,7 +1204,6 @@ def _find_matching_email_and_event(
     event_titre = (event_action.details or {}).get("titre") or ""
     best_email = max(candidates, key=lambda a: _title_similarity(a.sujet, event_titre))
     return best_email, event_action
-    return None
 
 
 def _execute_combined_email_and_event(
@@ -1320,7 +1418,7 @@ def approve_all_actions(
     # rend cette perte impossible : un échec plus loin dans le lot ne peut plus annuler
     # ce qui est déjà durablement enregistré.
     if mode in ("server", "oauth"):
-        pair = _find_matching_email_and_event(pending_actions, db, mission_id)
+        pair = _find_matching_email_and_event(pending_actions)
         if pair:
             email_action, event_action = pair
             try:

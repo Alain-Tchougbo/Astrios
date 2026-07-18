@@ -69,6 +69,11 @@ class GenerateDocumentsResponse(BaseModel):
 class GenerateActionsResponse(BaseModel):
     actions_created: int
     action_proposed: bool
+    # RÈGLE ABSOLUE de composition des envois, point 2 : destinataires (nom ou email)
+    # mentionnés dans la mission qui n'ont toujours aucune action email après une
+    # tentative de régénération ciblée — le frontend les signale dans le chat plutôt
+    # que de laisser un envoi demandé disparaître silencieusement.
+    missing_recipients: list[str] = []
 
 
 class TaskOut(BaseModel):

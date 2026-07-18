@@ -43,7 +43,9 @@ def test_pairing_matches_correct_email_among_multiple_by_recipient_and_title():
     db.commit()
 
     # 2 emails en attente + 1 evenement : un email correspond a l'evenement (meme
-    # destinataire, sujet proche), l'autre cible quelqu'un d'autre.
+    # destinataire, sujet proche), l'autre cible quelqu'un d'autre. Le participant de
+    # l'evenement doit etre EXPLICITE (voir RÈGLE ABSOLUE de composition des envois :
+    # correspondance stricte par adresse, plus de fallback "premier email trouvé").
     email_match = models.Action(
         mission_id=mission.id, task_id=task.id, type="email",
         destinataire="thomas@exemple-reel.com", sujet="Point projet — Thomas",
@@ -58,6 +60,7 @@ def test_pairing_matches_correct_email_among_multiple_by_recipient_and_title():
         mission_id=mission.id, task_id=task.id, type="calendar_event",
         details={
             "titre": "Point projet", "description": "Reunion.",
+            "participants": "thomas@exemple-reel.com",
             "date_debut": "2026-07-20T14:00:00", "date_fin": "2026-07-20T15:00:00",
         },
         statut=models.ActionStatus.en_attente,
@@ -66,7 +69,7 @@ def test_pairing_matches_correct_email_among_multiple_by_recipient_and_title():
     db.commit()
 
     pending = [email_match, email_other, event]
-    pair = missions_router._find_matching_email_and_event(pending, db, mission.id)
+    pair = missions_router._find_matching_email_and_event(pending)
 
     assert pair is not None
     matched_email, matched_event = pair
@@ -97,10 +100,6 @@ def test_pairing_returns_none_without_recipient_match():
         mission_id=mission.id, task_id=task.id, type="calendar_event",
         details={
             "titre": "Point projet", "description": "Reunion.",
-            # participant EXPLICITE et différent de l'email en attente : sans ça,
-            # _resolve_calendar_recipient retombe sur le seul email de la mission par
-            # défaut (comportement préexistant, hors périmètre de ce fix) — ce qui
-            # créerait un appariement "par défaut" et ne testerait pas le cas visé ici.
             "participants": "quelqu.un.d.autre@exemple-reel.com",
             "date_debut": "2026-07-20T14:00:00", "date_fin": "2026-07-20T15:00:00",
         },
@@ -109,7 +108,47 @@ def test_pairing_returns_none_without_recipient_match():
     db.add_all([email_other, event])
     db.commit()
 
-    pair = missions_router._find_matching_email_and_event([email_other, event], db, mission.id)
+    pair = missions_router._find_matching_email_and_event([email_other, event])
+    assert pair is None
+
+    db.delete(mission)
+    db.commit()
+    db.close()
+
+
+def test_pairing_returns_none_when_event_has_no_explicit_participant():
+    """RÈGLE ABSOLUE de composition des envois : un événement sans participant_email
+    CERTAIN ne doit plus jamais être apparié "par défaut" au seul email de la
+    mission (l'ancien comportement, supprimé) — il doit rester non apparié, pour un
+    envoi séparé (comportement sûr par défaut)."""
+    db = database.SessionLocal()
+    mission = _make_mission_with_tasks()
+    db.add(mission)
+    db.commit()
+    db.refresh(mission)
+    task = models.Task(mission_id=mission.id, titre="Tache", ordre=0)
+    db.add(task)
+    db.commit()
+
+    email_action = models.Action(
+        mission_id=mission.id, task_id=task.id, type="email",
+        destinataire="thomas@exemple-reel.com", sujet="Un sujet quelconque",
+        contenu="Contenu.", statut=models.ActionStatus.en_attente,
+    )
+    event = models.Action(
+        mission_id=mission.id, task_id=task.id, type="calendar_event",
+        details={
+            "titre": "Point projet", "description": "Reunion.",
+            # Pas de "participants" du tout.
+            "date_debut": "2026-07-20T14:00:00", "date_fin": "2026-07-20T15:00:00",
+        },
+        statut=models.ActionStatus.en_attente,
+    )
+    db.add_all([email_action, event])
+    db.commit()
+
+    assert missions_router._resolve_calendar_recipient(event) is None
+    pair = missions_router._find_matching_email_and_event([email_action, event])
     assert pair is None
 
     db.delete(mission)
@@ -244,6 +283,7 @@ def test_idempotence_guard_skips_action_already_executed():
 if __name__ == "__main__":
     test_pairing_matches_correct_email_among_multiple_by_recipient_and_title()
     test_pairing_returns_none_without_recipient_match()
+    test_pairing_returns_none_when_event_has_no_explicit_participant()
     test_persistence_survives_unexpected_exception_on_a_later_action()
     test_idempotence_guard_skips_action_already_executed()
     print("Tous les tests approve_all_actions passent.")

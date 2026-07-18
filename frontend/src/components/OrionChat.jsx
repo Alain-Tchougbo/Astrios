@@ -258,6 +258,25 @@ export default function OrionChat({ missionId, missionStatut, onMissionUpdated }
           : "Action proposée : en attente de ton approbation dans le panneau Actions."
         : "Cette mission ne nécessite aucune action d'envoi — les livrables sont prêts à consulter.",
     });
+
+    // RÈGLE ABSOLUE de composition des envois, point 2 : un destinataire mentionné
+    // par la mission mais sans action email (même après la tentative de
+    // régénération ciblée côté backend) doit être signalé explicitement plutôt que
+    // de disparaître silencieusement.
+    if (actionsResult.missing_recipients?.length > 0) {
+      const list = actionsResult.missing_recipients.join(", ");
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "error",
+          contenu:
+            actionsResult.missing_recipients.length > 1
+              ? `Attention : aucune action email n'a été créée pour ${list}. Vérifie leurs adresses ou reformule ta demande.`
+              : `Attention : aucune action email n'a été créée pour ${list}. Vérifie son adresse ou reformule ta demande.`,
+        },
+      ]);
+    }
+
     await onMissionUpdated?.();
   }
 
