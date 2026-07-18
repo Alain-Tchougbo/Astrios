@@ -94,6 +94,21 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
     try {
       const response = await approveAllActions(missionId, forceSimulation);
       setResults(response.results);
+      // La requête peut réussir (HTTP 200) tout en contenant des échecs PAR action
+      // (ex. SMTPAuthenticationError capturée côté backend, action restée "en_attente")
+      // — ça ne lève jamais d'exception ici, donc sans ce contrôle explicite l'échec
+      // passait inaperçu : l'utilisateur ne voyait que le bouton redevenir cliquable,
+      // sans aucun message (bug rapporté). On affiche le résumé ET on déplie le détail
+      // pour que le message précis par action (voir plus bas) soit visible sans clic.
+      const failures = response.results.filter((r) => !r.success);
+      if (failures.length > 0) {
+        setGroupError(
+          failures.length === 1
+            ? `1 action a échoué : ${failures[0].message}`
+            : `${failures.length} actions ont échoué. Voir le détail ci-dessous.`
+        );
+        setExpanded(true);
+      }
       await onAllApproved?.(response.results);
       onActionUpdated?.();
     } catch (err) {
@@ -157,6 +172,12 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
                     const fakeAddress = isEvent
                       ? hasFakeAddress(details.participants)
                       : hasFakeAddress(action.destinataire);
+                    // Une action reste "en_attente" après un essai raté (voir
+                    // handleApproveAll) : son résultat d'échec le plus récent, s'il y
+                    // en a un, doit rester visible ici — sinon rien ne distingue une
+                    // action jamais essayée d'une action qui vient d'échouer pour de
+                    // vrai (bug rapporté : bouton redevenu cliquable, aucun indice).
+                    const failedResult = resultFor(action.id);
                     return (
                       <li key={action.id} className="action-group-item">
                         <div className="action-item-header">
@@ -193,6 +214,13 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
                           <div className="action-fake-address-badge">
                             <AlertTriangle size={13} strokeWidth={2.5} />
                             Adresse à compléter
+                          </div>
+                        )}
+
+                        {failedResult && !failedResult.success && (
+                          <div className="action-feedback error">
+                            <AlertTriangle size={13} strokeWidth={2.5} />
+                            {failedResult.message}
                           </div>
                         )}
 

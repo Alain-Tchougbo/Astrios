@@ -1,3 +1,4 @@
+import difflib
 import io
 import logging
 import os
@@ -1056,24 +1057,54 @@ def _format_event_time_fr(naive_str: str) -> str:
     return f"{dt.hour}h{dt.minute:02d}" if dt.minute else f"{dt.hour}h"
 
 
+def _title_similarity(a: str | None, b: str | None) -> float:
+    """Similarité (0 à 1) entre deux titres/sujets, via difflib (stdlib, pas de
+    dépendance ajoutée) — utilisée pour départager PLUSIEURS emails ciblant le même
+    destinataire qu'un événement, quand le destinataire seul ne suffit plus à
+    désigner sans ambiguïté lequel appartient à l'événement."""
+    return difflib.SequenceMatcher(None, (a or "").strip().lower(), (b or "").strip().lower()).ratio()
+
+
 def _find_matching_email_and_event(
     pending_actions: list[models.Action], db: Session, mission_id: int
 ) -> tuple[models.Action, models.Action] | None:
-    """Si la mission a exactement un email et un événement en attente ciblant le
-    même destinataire réel, on les combine en un seul envoi (SMTP ou Gmail API
-    selon le mode) au lieu de deux envois séparés au même destinataire (voir
-    _execute_combined_email_and_event) — s'applique aussi bien en mode serveur
-    qu'en mode oauth."""
+    """Associe l'email qui correspond le mieux à l'événement en attente pour les
+    combiner en un seul envoi (SMTP ou Gmail API selon le mode) au lieu d'envois
+    séparés — s'applique aussi bien en mode serveur qu'en mode oauth.
+
+    Bug corrigé : l'ancienne version exigeait EXACTEMENT un email et un événement en
+    attente (len() != 1 -> aucune combinaison) — dès qu'une deuxième action email
+    était en attente en même temps (ex. une relance à quelqu'un d'autre), plus
+    aucune combinaison n'avait lieu du tout, même pour la paire qui correspondait
+    réellement. Le destinataire commun reste le filtre déterminant ; la similarité
+    de titre/sujet ne sert qu'à départager s'il y a plusieurs emails candidats pour
+    le MÊME destinataire (cas rare mais possible).
+
+    Ne traite qu'UN SEUL événement par lot (le premier trouvé) : propose_action ne
+    génère jamais plus d'un calendar_event par appel, et gérer plusieurs événements
+    simultanés dans un même lot serait hors du périmètre de ce bug."""
     email_actions = [a for a in pending_actions if a.type == "email"]
     event_actions = [a for a in pending_actions if a.type == "calendar_event"]
-    if len(email_actions) != 1 or len(event_actions) != 1:
+    if not email_actions or not event_actions:
         return None
 
-    email_action = email_actions[0]
     event_action = event_actions[0]
     event_recipient = _resolve_calendar_recipient(db, mission_id, event_action)
-    if event_recipient and event_recipient.strip().lower() == (email_action.destinataire or "").strip().lower():
-        return email_action, event_action
+    if not event_recipient:
+        return None
+
+    candidates = [
+        a for a in email_actions
+        if (a.destinataire or "").strip().lower() == event_recipient.strip().lower()
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0], event_action
+
+    event_titre = (event_action.details or {}).get("titre") or ""
+    best_email = max(candidates, key=lambda a: _title_similarity(a.sujet, event_titre))
+    return best_email, event_action
     return None
 
 
@@ -1225,8 +1256,23 @@ def approve_action(
 
     try:
         message = _execute_action(db, mission_id, action, mode)
-    except _SERVER_MODE_ERRORS as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        # Toute exception fait échouer proprement la requête (jamais un 500 brut non
+        # explicité) : les types connus (_SERVER_MODE_ERRORS) remontent leur message
+        # tel quel, un type inattendu est loggé en détail côté serveur mais affiché
+        # de façon générique côté client — dans les deux cas l'action reste
+        # "en_attente" (rollback), rejouable proprement au prochain essai.
+        db.rollback()
+        known = isinstance(exc, _SERVER_MODE_ERRORS)
+        if not known:
+            logger.error(
+                "Échec inattendu lors de l'exécution de l'action %s (mission %s) : %s",
+                action_id, mission_id, exc, exc_info=True,
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc) if known else "Une erreur inattendue est survenue pendant l'exécution.",
+        ) from exc
 
     _maybe_complete_mission(db, mission, mission_id)
     db.commit()
@@ -1263,29 +1309,66 @@ def approve_all_actions(
     outcomes = []
     remaining_actions = pending_actions
 
+    # Chaque groupe d'actions (la paire combinée, puis chaque action restante) est
+    # commité INDIVIDUELLEMENT juste après son exécution, et toute exception — pas
+    # seulement _SERVER_MODE_ERRORS — est rattrapée ici. Bug corrigé : avec un commit
+    # unique en fin de boucle, une exception inattendue (ex. un TypeError sur une date
+    # manquante) sur UNE action annulait le commit de TOUTES les autres actions du même
+    # lot déjà exécutées avec succès (email réellement envoyé, statut muté en mémoire
+    # mais jamais persisté) — elles repartaient donc pour de vrai à chaque nouvel essai
+    # (observé : 3 clics = 3 envois réels du même email). Committer après chaque succès
+    # rend cette perte impossible : un échec plus loin dans le lot ne peut plus annuler
+    # ce qui est déjà durablement enregistré.
     if mode in ("server", "oauth"):
         pair = _find_matching_email_and_event(pending_actions, db, mission_id)
         if pair:
             email_action, event_action = pair
             try:
                 message = _execute_combined_email_and_event(db, mission_id, email_action, event_action, mode)
+                db.commit()
                 outcomes.append((email_action, True, message))
                 outcomes.append((event_action, True, message))
-            except _SERVER_MODE_ERRORS as exc:
-                outcomes.append((email_action, False, str(exc)))
-                outcomes.append((event_action, False, str(exc)))
+            except Exception as exc:
+                db.rollback()
+                known = isinstance(exc, _SERVER_MODE_ERRORS)
+                if not known:
+                    logger.error(
+                        "Échec inattendu lors de l'envoi combiné (mission %s, actions %s/%s) : %s",
+                        mission_id, email_action.id, event_action.id, exc, exc_info=True,
+                    )
+                display_message = str(exc) if known else "Une erreur inattendue est survenue pendant l'envoi."
+                outcomes.append((email_action, False, display_message))
+                outcomes.append((event_action, False, display_message))
             remaining_actions = [
                 a for a in pending_actions if a.id not in (email_action.id, event_action.id)
             ]
 
     for action in remaining_actions:
+        # Garde d'idempotence : revérifie l'état réel juste avant d'exécuter, au cas où
+        # cette action aurait déjà été traitée entre le chargement de pending_actions en
+        # haut de cette fonction et ce point précis (double clic rapide, appel concurrent
+        # sur la même mission) — sans ça, une action déjà "executee" entre-temps
+        # pourrait repartir pour de vrai une seconde fois dans ce même lot.
+        db.refresh(action)
+        if action.statut != models.ActionStatus.en_attente:
+            continue
         try:
             message = _execute_action(db, mission_id, action, mode)
+            db.commit()
             outcomes.append((action, True, message))
-        except _SERVER_MODE_ERRORS as exc:
-            # L'action reste "en_attente" : elle pourra être retentée lors d'un prochain
-            # appel à approve-all, sans perdre les autres actions déjà exécutées.
-            outcomes.append((action, False, str(exc)))
+        except Exception as exc:
+            db.rollback()
+            known = isinstance(exc, _SERVER_MODE_ERRORS)
+            if not known:
+                logger.error(
+                    "Échec inattendu lors de l'exécution de l'action %s (mission %s) : %s",
+                    action.id, mission_id, exc, exc_info=True,
+                )
+            # L'action reste "en_attente" (le rollback ci-dessus annule toute mutation
+            # partielle) : elle pourra être retentée lors d'un prochain appel à
+            # approve-all, sans jamais perdre les autres actions déjà commitées
+            # individuellement ci-dessus.
+            outcomes.append((action, False, str(exc) if known else "Une erreur inattendue est survenue."))
 
     _maybe_complete_mission(db, mission, mission_id)
     db.commit()
