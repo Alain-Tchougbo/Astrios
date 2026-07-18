@@ -117,16 +117,17 @@ export function excludeAction(missionId, actionId) {
   });
 }
 
-export function approveAllActions(missionId) {
-  return request(`/missions/${missionId}/actions/approve-all`, {
+export function approveAllActions(missionId, forceSimulation = false) {
+  const query = forceSimulation ? "?force_simulation=true" : "";
+  return request(`/missions/${missionId}/actions/approve-all${query}`, {
     method: "POST",
   });
 }
 
-export function updateAction(missionId, actionId, { destinataire, sujet, contenu }) {
+export function updateAction(missionId, actionId, payload) {
   return request(`/missions/${missionId}/actions/${actionId}`, {
     method: "PATCH",
-    body: JSON.stringify({ destinataire, sujet, contenu }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -136,6 +137,28 @@ export function retryMission(missionId) {
   });
 }
 
+export function generatePlan(missionId) {
+  return request(`/missions/${missionId}/generate-plan`, {
+    method: "POST",
+  });
+}
+
+export function generateDocuments(missionId) {
+  return request(`/missions/${missionId}/generate-documents`, {
+    method: "POST",
+  });
+}
+
+export function generateActions(missionId) {
+  return request(`/missions/${missionId}/generate-actions`, {
+    method: "POST",
+  });
+}
+
 export function getGoogleStatus() {
   return request("/auth/google/status");
+}
+
+export function getExecutionMode() {
+  return request("/auth/google/execution-mode");
 }

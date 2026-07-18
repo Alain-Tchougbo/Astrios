@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Check, Pencil, X } from "lucide-react";
+import { ArrowLeft, Check, Download, Pencil, X } from "lucide-react";
 import { updateDocument } from "../api";
+import { downloadDocument } from "../utils/download";
+import { getDocumentPurpose } from "../utils/documents";
 
 function renderInline(text, keyPrefix) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
@@ -109,16 +111,34 @@ export default function DocumentViewer({ doc, missionId, onBack, onDocumentUpdat
           Retour à la conversation
         </button>
         {!editing && (
-          <button className="document-edit-btn" onClick={handleStartEdit}>
-            <Pencil size={13} strokeWidth={2.25} />
-            Modifier
-          </button>
+          <div className="document-viewer-header-actions">
+            <button
+              className="document-download-text-btn"
+              onClick={() => downloadDocument(doc, "md")}
+              title="Télécharger au format Markdown (.md)"
+            >
+              <Download size={13} strokeWidth={2.25} />
+              Télécharger
+            </button>
+            <button
+              className="document-download-text-btn secondary"
+              onClick={() => downloadDocument(doc, "txt")}
+              title="Télécharger au format texte (.txt)"
+            >
+              .txt
+            </button>
+            <button className="document-edit-btn" onClick={handleStartEdit}>
+              <Pencil size={13} strokeWidth={2.25} />
+              Modifier
+            </button>
+          </div>
         )}
       </div>
 
       <div className="document-viewer-body">
         <span className="document-type-badge">{doc.type}</span>
         <h2 className="document-viewer-title">{doc.titre}</h2>
+        <p className="document-viewer-purpose">{getDocumentPurpose(doc)}</p>
 
         {editing ? (
           <>

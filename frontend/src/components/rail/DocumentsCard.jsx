@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, FileText } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, FileText } from "lucide-react";
+import { downloadDocument } from "../../utils/download";
+import { getDocumentPurpose } from "../../utils/documents";
 
 const STATUS_ORDER = [
   "nouvelle",
@@ -48,10 +50,25 @@ export default function DocumentsCard({ documents, onSelect, missionStatut }) {
         ) : (
           <ul className="document-list">
             {documents.map((doc) => (
-              <li key={doc.id}>
+              <li key={doc.id} className="document-list-row">
                 <button className="document-item" onClick={() => onSelect(doc)}>
-                  <span className="document-item-title">{doc.titre}</span>
-                  <span className="document-item-type">{doc.type}</span>
+                  <span className="document-item-main">
+                    <span className="document-item-title">{doc.titre}</span>
+                    <span className="document-item-type">{doc.type}</span>
+                  </span>
+                  <span className="document-item-purpose">{getDocumentPurpose(doc)}</span>
+                </button>
+                <button
+                  type="button"
+                  className="document-download-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    downloadDocument(doc, "md");
+                  }}
+                  aria-label={`Télécharger ${doc.titre}`}
+                  title="Télécharger (.md)"
+                >
+                  <Download size={14} strokeWidth={2.25} />
                 </button>
               </li>
             ))}

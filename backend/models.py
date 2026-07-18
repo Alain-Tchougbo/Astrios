@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import JSON, Column, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -40,6 +40,11 @@ class Mission(Base):
     titre = Column(String, nullable=False)
     objectif = Column(Text, nullable=True)
     statut = Column(Enum(MissionStatus), nullable=False, default=MissionStatus.nouvelle)
+    # Faits factuels extraits une seule fois à la fin de la découverte (destinataires,
+    # rendez-vous, noms exacts, délais, contraintes) — partagés ensuite avec TOUS les
+    # générateurs (plan, documents, actions) pour qu'ils restent rigoureusement
+    # cohérents entre eux au lieu de diverger via des appels Qwen indépendants.
+    mission_facts = Column(JSON, nullable=True)
     date_creation = Column(DateTime, default=datetime.utcnow)
 
     messages = relationship("Message", back_populates="mission", cascade="all, delete-orphan")
@@ -88,6 +93,14 @@ class Document(Base):
     titre = Column(String, nullable=False)
     type = Column(String, nullable=False)
     contenu = Column(Text, nullable=False)
+    # Phrase courte orientée usage ("Ce document vous sert à..."), générée par Qwen en
+    # même temps que le document. Optionnel : les documents créés avant l'ajout de ce
+    # champ n'en ont pas — le frontend applique un repli générique basé sur "type".
+    purpose = Column(Text, nullable=True)
+    # true si CE document est le texte prêt à envoyer comme email de la mission —
+    # l'action email correspondante réutilise alors son titre/contenu verbatim au
+    # lieu d'être régénérée indépendamment (voir _run_generate_actions).
+    is_email_source = Column(Boolean, nullable=True, default=False)
     date_creation = Column(DateTime, default=datetime.utcnow)
 
     mission = relationship("Mission", back_populates="documents")
@@ -105,6 +118,9 @@ class Action(Base):
     contenu = Column(Text, nullable=False, default="")
     details = Column(JSON, nullable=True)
     statut = Column(Enum(ActionStatus), nullable=False, default=ActionStatus.en_attente)
+    # "oauth" (compte Google de l'utilisateur), "server" (SMTP + .ics via le compte de
+    # démo), "simulation" (aucun envoi réel) — renseigné au moment de l'exécution.
+    execution_mode = Column(String, nullable=True)
     date_creation = Column(DateTime, default=datetime.utcnow)
 
     mission = relationship("Mission", back_populates="actions")

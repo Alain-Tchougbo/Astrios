@@ -1,16 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  AlertTriangle,
   Calendar,
   Check,
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  Info,
   Mail,
   Pencil,
   X,
   Zap,
 } from "lucide-react";
-import { GOOGLE_LOGIN_URL, approveAllActions, excludeAction, updateAction } from "../../api";
+import { GOOGLE_LOGIN_URL, approveAllActions, excludeAction, getExecutionMode } from "../../api";
+import ActionEditDrawer from "./ActionEditDrawer";
 
 const STATUS_LABEL = {
   en_attente: "En attente",
@@ -18,6 +21,16 @@ const STATUS_LABEL = {
   rejetee: "Retirée",
   executee: "Exécutée",
 };
+
+const MODE_BANNER = {
+  server:
+    "Exécution via le compte de démonstration Orion (orionastrios@gmail.com). En production, Astrios agit depuis votre propre compte Google.",
+  simulation: "Mode simulation : aucun envoi réel (le service de démonstration n'est pas configuré).",
+};
+
+function hasFakeAddress(text) {
+  return (text || "").toLowerCase().includes("@exemple.com");
+}
 
 function formatEventDate(dateStr) {
   if (!dateStr) return "";
@@ -47,40 +60,19 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
   const [excludingId, setExcludingId] = useState(null);
   const [approving, setApproving] = useState(false);
   const [groupError, setGroupError] = useState(null);
-  const [needsGoogleAuth, setNeedsGoogleAuth] = useState(false);
+  const [rateLimited, setRateLimited] = useState(false);
   const [results, setResults] = useState(null);
-  const [editingId, setEditingId] = useState(null);
-  const [draft, setDraft] = useState({ destinataire: "", sujet: "", contenu: "" });
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [editError, setEditError] = useState(null);
+  const [editingAction, setEditingAction] = useState(null);
+  const [executionMode, setExecutionMode] = useState(null);
 
   const pendingActions = actions.filter((a) => a.statut === "en_attente");
   const resolvedActions = actions.filter((a) => a.statut !== "en_attente");
 
-  function handleStartEdit(action) {
-    setEditingId(action.id);
-    setDraft({ destinataire: action.destinataire, sujet: action.sujet, contenu: action.contenu });
-    setEditError(null);
-  }
-
-  function handleCancelEdit() {
-    setEditingId(null);
-    setEditError(null);
-  }
-
-  async function handleSaveEdit(action) {
-    setSavingEdit(true);
-    setEditError(null);
-    try {
-      await updateAction(missionId, action.id, draft);
-      setEditingId(null);
-      onActionUpdated?.();
-    } catch (err) {
-      setEditError(err.message || "Échec de l'enregistrement.");
-    } finally {
-      setSavingEdit(false);
-    }
-  }
+  useEffect(() => {
+    getExecutionMode()
+      .then((res) => setExecutionMode(res.mode))
+      .catch(() => setExecutionMode(null));
+  }, [missionId, actions.length]);
 
   async function handleExclude(action) {
     setExcludingId(action.id);
@@ -95,18 +87,18 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
     }
   }
 
-  async function handleApproveAll() {
+  async function handleApproveAll(forceSimulation = false) {
     setApproving(true);
     setGroupError(null);
-    setNeedsGoogleAuth(false);
+    setRateLimited(false);
     try {
-      const response = await approveAllActions(missionId);
+      const response = await approveAllActions(missionId, forceSimulation);
       setResults(response.results);
       await onAllApproved?.(response.results);
       onActionUpdated?.();
     } catch (err) {
       setGroupError(err.message || "Échec de l'exécution.");
-      setNeedsGoogleAuth(err.status === 409);
+      setRateLimited(err.status === 429);
     } finally {
       setApproving(false);
     }
@@ -150,102 +142,80 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
                 </button>
               </div>
 
+              {executionMode && MODE_BANNER[executionMode] && (
+                <div className="action-mode-banner">
+                  <Info size={14} strokeWidth={2.25} />
+                  {MODE_BANNER[executionMode]}
+                </div>
+              )}
+
               {expanded && (
                 <ul className="action-group-detail">
                   {pendingActions.map((action) => {
                     const isEvent = action.type === "calendar_event";
                     const details = action.details || {};
+                    const fakeAddress = isEvent
+                      ? hasFakeAddress(details.participants)
+                      : hasFakeAddress(action.destinataire);
                     return (
                       <li key={action.id} className="action-group-item">
-                        {editingId === action.id ? (
+                        <div className="action-item-header">
+                          {isEvent ? (
+                            <Calendar size={13} strokeWidth={2.25} />
+                          ) : (
+                            <Mail size={13} strokeWidth={2.25} />
+                          )}
+                          <span className="action-item-status">{isEvent ? "Événement" : "Email"}</span>
+                        </div>
+
+                        {isEvent ? (
                           <>
-                            <input
-                              className="action-edit-input"
-                              value={draft.destinataire}
-                              onChange={(e) => setDraft((d) => ({ ...d, destinataire: e.target.value }))}
-                              placeholder="Destinataire"
-                            />
-                            <input
-                              className="action-edit-input"
-                              value={draft.sujet}
-                              onChange={(e) => setDraft((d) => ({ ...d, sujet: e.target.value }))}
-                              placeholder="Sujet"
-                            />
-                            <textarea
-                              className="action-edit-textarea"
-                              value={draft.contenu}
-                              onChange={(e) => setDraft((d) => ({ ...d, contenu: e.target.value }))}
-                            />
-                            {editError && <div className="action-edit-error">{editError}</div>}
-                            <div className="action-item-buttons">
-                              <button
-                                className="action-approve-btn"
-                                disabled={savingEdit}
-                                onClick={() => handleSaveEdit(action)}
-                              >
-                                <Check size={14} strokeWidth={2.5} />
-                                Enregistrer
-                              </button>
-                              <button
-                                className="action-reject-btn"
-                                disabled={savingEdit}
-                                onClick={handleCancelEdit}
-                              >
-                                <X size={14} strokeWidth={2.5} />
-                                Annuler
-                              </button>
+                            <div className="action-item-subject">{details.titre}</div>
+                            <div className="action-item-to action-item-to-wrap">
+                              {formatEventDate(details.date_debut)}
+                              {details.date_fin ? ` → ${formatEventDate(details.date_fin)}` : ""}
+                            </div>
+                            <div className="action-item-to action-item-to-wrap">
+                              <span className="action-item-to-label">Participant(s) :</span>{" "}
+                              {details.participants || "—"}
                             </div>
                           </>
                         ) : (
                           <>
-                            <div className="action-item-header">
-                              {isEvent ? (
-                                <Calendar size={13} strokeWidth={2.25} />
-                              ) : (
-                                <Mail size={13} strokeWidth={2.25} />
-                              )}
-                              <span className="action-item-status">{isEvent ? "Événement" : "Email"}</span>
+                            <div className="action-item-to action-item-to-wrap">
+                              <span className="action-item-to-label">À :</span> {action.destinataire}
                             </div>
-
-                            {isEvent ? (
-                              <>
-                                <div className="action-item-subject">{details.titre}</div>
-                                <div className="action-item-to">
-                                  {formatEventDate(details.date_debut)}
-                                  {details.date_fin ? ` → ${formatEventDate(details.date_fin)}` : ""}
-                                </div>
-                              </>
-                            ) : (
-                              <>
-                                <div className="action-item-to">À : {action.destinataire}</div>
-                                <div className="action-item-subject">{action.sujet}</div>
-                              </>
-                            )}
-
-                            <div className="action-item-buttons">
-                              {!isEvent && (
-                                <button
-                                  type="button"
-                                  className="action-edit-btn"
-                                  onClick={() => handleStartEdit(action)}
-                                  aria-label="Modifier le contenu de l'email"
-                                  title="Modifier le contenu"
-                                >
-                                  <Pencil size={13} strokeWidth={2.25} />
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                className="action-reject-btn"
-                                disabled={excludingId === action.id}
-                                onClick={() => handleExclude(action)}
-                              >
-                                <X size={14} strokeWidth={2.5} />
-                                Retirer de cette exécution
-                              </button>
-                            </div>
+                            <div className="action-item-subject">{action.sujet}</div>
                           </>
                         )}
+
+                        {fakeAddress && (
+                          <div className="action-fake-address-badge">
+                            <AlertTriangle size={13} strokeWidth={2.5} />
+                            Adresse à compléter
+                          </div>
+                        )}
+
+                        <div className="action-item-buttons">
+                          <button
+                            type="button"
+                            className="action-edit-btn"
+                            onClick={() => setEditingAction(action)}
+                            aria-label={isEvent ? "Modifier l'événement" : "Modifier l'email"}
+                          >
+                            <Pencil size={13} strokeWidth={2.25} />
+                            Modifier
+                          </button>
+                          <button
+                            type="button"
+                            className="action-reject-btn"
+                            disabled={excludingId === action.id}
+                            onClick={() => handleExclude(action)}
+                          >
+                            <X size={14} strokeWidth={2.5} />
+                            Retirer
+                          </button>
+                        </div>
                       </li>
                     );
                   })}
@@ -255,11 +225,15 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
               {groupError && (
                 <div className="action-feedback error">
                   {groupError}
-                  {needsGoogleAuth && (
-                    <a className="action-google-connect-btn" href={GOOGLE_LOGIN_URL}>
-                      <ExternalLink size={13} strokeWidth={2.25} />
-                      Se connecter à Google
-                    </a>
+                  {rateLimited && (
+                    <button
+                      type="button"
+                      className="action-simulation-fallback-btn"
+                      onClick={() => handleApproveAll(true)}
+                      disabled={approving}
+                    >
+                      Continuer en mode simulation
+                    </button>
                   )}
                 </div>
               )}
@@ -268,11 +242,16 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
                 type="button"
                 className="action-approve-all-btn"
                 disabled={approving}
-                onClick={handleApproveAll}
+                onClick={() => handleApproveAll(false)}
               >
                 <Check size={15} strokeWidth={2.5} />
                 {approving ? "Exécution en cours…" : "Approuver et exécuter tout"}
               </button>
+
+              <a className="action-google-connect-btn advanced" href={GOOGLE_LOGIN_URL}>
+                <ExternalLink size={13} strokeWidth={2.25} />
+                Se connecter à Google (réservé aux comptes testeurs approuvés)
+              </a>
             </div>
           )}
 
@@ -315,6 +294,13 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
           )}
         </>
       )}
+
+      <ActionEditDrawer
+        missionId={missionId}
+        action={editingAction}
+        onClose={() => setEditingAction(null)}
+        onSaved={onActionUpdated}
+      />
     </section>
   );
 }

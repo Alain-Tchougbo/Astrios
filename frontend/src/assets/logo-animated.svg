@@ -1,0 +1,27 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+    </filter>
+  </defs>
+  <g transform="translate(256,256)" stroke="#17b482" stroke-width="20" stroke-linecap="round" fill="none">
+    <line x1="-110" y1="70" x2="0" y2="-100"/>
+    <line x1="0" y1="-100" x2="110" y2="40"/>
+    <line x1="110" y1="40" x2="-40" y2="110"/>
+    <line x1="-40" y1="110" x2="-110" y2="70"/>
+  </g>
+  <g transform="translate(256,256)" fill="#17b482">
+    <circle cx="-110" cy="70" r="16"/>
+    <circle cx="0" cy="-100" r="22"/>
+    <circle cx="110" cy="40" r="16"/>
+    <circle cx="-40" cy="110" r="16"/>
+  </g>
+  <g transform="translate(256,256)">
+    <circle r="16" fill="#ffffff" opacity="0.5" filter="url(#glow)">
+      <animateMotion dur="2.6s" repeatCount="indefinite" path="M -110,70 L 0,-100 L 110,40 L -40,110 Z"/>
+    </circle>
+    <circle r="9" fill="#ffffff">
+      <animateMotion dur="2.6s" repeatCount="indefinite" path="M -110,70 L 0,-100 L 110,40 L -40,110 Z"/>
+    </circle>
+  </g>
+</svg>

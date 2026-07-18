@@ -11,7 +11,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="qwen-plus",
+    model="qwen3.7-plus",
     messages=[
         {"role": "user", "content": "Bonjour, confirme que tu es bien connecté"},
     ],

@@ -3,12 +3,13 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import Base, engine
+from database import Base, engine, ensure_schema_migrations
 from routers import auth, missions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
 
 Base.metadata.create_all(bind=engine)
+ensure_schema_migrations()
 
 app = FastAPI(title="Astrios API")
 

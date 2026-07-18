@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
 import google_calendar
+import smtp_sender
 
 logger = logging.getLogger("auth")
 
@@ -40,3 +41,14 @@ def google_callback(code: str | None = None, error: str | None = None):
 @router.get("/status")
 def google_status():
     return {"connected": google_calendar.is_connected()}
+
+
+@router.get("/execution-mode")
+def execution_mode():
+    # Reporté au frontend pour afficher, avant même de cliquer sur "Approuver et
+    # exécuter tout", le bandeau qui correspond au canal réellement utilisé.
+    if google_calendar.is_connected():
+        return {"mode": "oauth"}
+    if smtp_sender.is_smtp_configured():
+        return {"mode": "server"}
+    return {"mode": "simulation"}

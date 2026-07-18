@@ -9,14 +9,20 @@ import ActionsCard from "./rail/ActionsCard";
 import { getActions, getDocument, getDocuments, getTasks } from "../api";
 import { useMissionRenameDelete } from "../hooks/useMissionRenameDelete";
 
-const STATUS_PROGRESS = {
-  nouvelle: 10,
-  en_cours: 25,
-  plan_pret: 50,
-  documents_prets: 75,
-  action_en_attente: 90,
-  terminee: 100,
-};
+// Progression recalculée à partir de l'état réel (tâches cochées / total, actions
+// traitées / total) plutôt qu'une valeur figée par statut — une mission "terminee"
+// qui se réouvre (nouveau besoin ajouté après coup, voir chat_with_orion côté
+// backend) doit refléter le vrai ratio de travail accompli, pas retomber sur un
+// pourcentage bas générique qui sous-estimerait tout ce qui était déjà fait, ni
+// rester figée à 100% pendant que de nouvelles tâches/actions sont en cours.
+function computeProgress(statut, tasks, actions) {
+  if (statut === "nouvelle") return 10;
+  if (tasks.length === 0) return 25;
+  const taskRatio = tasks.filter((t) => t.statut === "terminee").length / tasks.length;
+  if (actions.length === 0) return Math.round(taskRatio * 100);
+  const actionRatio = actions.filter((a) => a.statut !== "en_attente").length / actions.length;
+  return Math.round(((taskRatio + actionRatio) / 2) * 100);
+}
 
 const STATUS_LABEL = {
   nouvelle: "Nouvelle",
@@ -32,13 +38,11 @@ function sleep(ms) {
 }
 
 export default function MissionView({ mission, onMissionUpdated, onMissionRenamed, onMissionDeleted }) {
-  const progress = STATUS_PROGRESS[mission.statut] ?? 10;
   const [tasks, setTasks] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [actions, setActions] = useState([]);
+  const progress = computeProgress(mission.statut, tasks, actions);
   const [selectedDoc, setSelectedDoc] = useState(null);
-  const [planGenerating, setPlanGenerating] = useState(false);
-  const [documentsGenerating, setDocumentsGenerating] = useState(false);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -224,20 +228,12 @@ export default function MissionView({ mission, onMissionUpdated, onMissionRename
             <OrionChat
               missionId={mission.id}
               missionStatut={mission.statut}
-              onDiscoveryComplete={onMissionUpdated}
-              onPlanGeneratingChange={setPlanGenerating}
-              onDocumentsGeneratingChange={setDocumentsGenerating}
+              onMissionUpdated={onMissionUpdated}
             />
           )}
         </div>
         <aside className="mission-rail">
-          <TimelineCard
-            statut={mission.statut}
-            planGenerating={planGenerating}
-            documentsGenerating={documentsGenerating}
-            progress={progress}
-            actions={actions}
-          />
+          <TimelineCard statut={mission.statut} progress={progress} actions={actions} />
           <PlanCard tasks={tasks} />
           <DocumentsCard
             documents={documents}

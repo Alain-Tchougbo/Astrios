@@ -7,7 +7,11 @@ const STEPS = [
   { key: "execution", label: "Exécution" },
 ];
 
-// Statut de mission -> index de l'étape en cours (squelette, sera piloté par Orion plus tard).
+// Statut de mission -> index de l'étape en cours. Chaque étape de génération
+// (/generate-plan, /generate-documents, /generate-actions) est un appel réseau séparé
+// et met à jour ce statut dès qu'elle se termine ; pendant l'attente d'une étape, le
+// statut est encore celui de l'étape précédente, ce qui fait naturellement "pulser"
+// (état actif) la bonne étape de la Timeline sans booléen dédié.
 const STATUS_STEP = {
   nouvelle: 0,
   en_cours: 1,
@@ -17,14 +21,8 @@ const STATUS_STEP = {
   terminee: 4,
 };
 
-export default function TimelineCard({
-  statut,
-  planGenerating,
-  documentsGenerating,
-  progress,
-  actions = [],
-}) {
-  const currentStep = documentsGenerating ? 2 : planGenerating ? 1 : STATUS_STEP[statut] ?? 0;
+export default function TimelineCard({ statut, progress, actions = [] }) {
+  const currentStep = STATUS_STEP[statut] ?? 0;
 
   const totalActions = actions.length;
   const treatedActions = actions.filter((a) => a.statut !== "en_attente").length;

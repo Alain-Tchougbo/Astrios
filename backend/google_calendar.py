@@ -10,6 +10,10 @@ from googleapiclient.discovery import build
 
 logger = logging.getLogger("google_calendar")
 
+# Même fuseau que ics_builder.py : les horaires "muraux" de mission_facts (ex.
+# "13:00") sont ceux de l'utilisateur, pas du serveur ni de Paris.
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Africa/Porto-Novo")
+
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/gmail.send",
@@ -112,6 +116,24 @@ def is_connected() -> bool:
     return bool(creds and creds.valid)
 
 
+def get_connected_account_email() -> str | None:
+    """Adresse email du compte Google actuellement connecté (mode oauth), ou None si
+    aucun compte n'est connecté ou si la requête échoue. Utilisée pour que l'ORGANIZER
+    du .ics (et l'expéditeur affiché) corresponde au VRAI compte utilisateur en mode
+    oauth, jamais au compte de démo SMTP (Orion) — sinon les réponses RSVP partiraient
+    vers un compte qui n'est même pas l'expéditeur réel du message (bug rapporté)."""
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        return None
+    try:
+        service = build("gmail", "v1", credentials=creds)
+        profile = service.users().getProfile(userId="me").execute()
+        return profile.get("emailAddress")
+    except Exception:
+        logger.warning("Impossible de récupérer l'adresse du compte Google connecté.", exc_info=True)
+        return None
+
+
 def create_calendar_event(titre: str, description: str, date_debut: str, date_fin: str) -> dict:
     creds = get_credentials()
     if not creds or not creds.valid:
@@ -123,8 +145,8 @@ def create_calendar_event(titre: str, description: str, date_debut: str, date_fi
     event = {
         "summary": titre,
         "description": description,
-        "start": {"dateTime": date_debut, "timeZone": "Europe/Paris"},
-        "end": {"dateTime": date_fin, "timeZone": "Europe/Paris"},
+        "start": {"dateTime": date_debut, "timeZone": APP_TIMEZONE},
+        "end": {"dateTime": date_fin, "timeZone": APP_TIMEZONE},
         "reminders": {
             "useDefault": False,
             "overrides": [

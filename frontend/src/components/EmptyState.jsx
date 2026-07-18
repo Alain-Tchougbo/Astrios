@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ArrowRight } from "lucide-react";
+import logo from "../assets/logo.svg";
 
 export default function EmptyState({ onCreate, creating }) {
   const [titre, setTitre] = useState("");
@@ -16,7 +17,7 @@ export default function EmptyState({ onCreate, creating }) {
   return (
     <div className="empty-state">
       <div className="empty-state-inner">
-        <span className="empty-state-mark" />
+        <img src={logo} alt="" className="empty-state-mark" />
         <h1>Bienvenue sur Astrios</h1>
         <p>
           Crée ta première mission. Orion t'aidera à la cadrer, à construire un
