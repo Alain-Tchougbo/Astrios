@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,9 +14,19 @@ ensure_schema_migrations()
 
 app = FastAPI(title="Astrios API")
 
+# Origines autorisées, configurables via CORS_ORIGINS (liste séparée par des
+# virgules). La valeur était codée en dur sur le serveur de dev Vite : tout
+# déploiement où le frontend n'est pas servi sur la même origine que l'API voyait
+# ses appels bloqués par le navigateur, sans indice côté serveur.
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

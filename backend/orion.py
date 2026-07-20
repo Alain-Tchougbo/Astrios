@@ -10,10 +10,30 @@ from openai import OpenAI
 
 load_dotenv()
 
-client = OpenAI(
-    api_key=os.getenv("QWEN_API_KEY"),
-    base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-)
+QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+_client: OpenAI | None = None
+
+
+def _get_client() -> OpenAI:
+    """Client Qwen construit à la PREMIÈRE utilisation, pas à l'import du module.
+
+    Instancié au niveau module, il exigeait une QWEN_API_KEY présente rien que pour
+    importer orion.py — donc aussi pour importer routers/missions.py, donc pour
+    collecter la suite de tests, qui échouait intégralement sur un poste sans clé
+    alors qu'aucun de ces tests n'appelle Qwen. Différer la construction rend les
+    tests exécutables sans secret, et fait apparaître une clé manquante au moment
+    du premier appel réel, avec un message explicite."""
+    global _client
+    if _client is None:
+        api_key = os.getenv("QWEN_API_KEY")
+        if not api_key:
+            raise OrionAPIError(
+                "QWEN_API_KEY absente de la configuration du serveur — Orion ne peut pas répondre."
+            )
+        _client = OpenAI(api_key=api_key, base_url=QWEN_BASE_URL)
+    return _client
+
 
 MODEL = "qwen3.7-plus"
 RETRY_DELAY_SECONDS = 2
@@ -35,7 +55,7 @@ def _create_completion(messages: list[dict], json_mode: bool = False):
     last_error: Exception | None = None
     for attempt in range(2):
         try:
-            return client.chat.completions.create(model=MODEL, messages=messages, **kwargs)
+            return _get_client().chat.completions.create(model=MODEL, messages=messages, **kwargs)
         except Exception as exc:  # noqa: BLE001 - on relaie l'erreur d'origine après retry
             last_error = exc
             if attempt == 0:

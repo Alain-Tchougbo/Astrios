@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Calendar, Check, Mail, X } from "lucide-react";
 import { updateAction } from "../../api";
 
@@ -46,6 +46,7 @@ export default function ActionEditDrawer({ missionId, action, onClose, onSaved }
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const drawerRef = useRef(null);
 
   useEffect(() => {
     if (!action) return;
@@ -72,6 +73,18 @@ export default function ActionEditDrawer({ missionId, action, onClose, onSaved }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [action, onClose]);
+
+  // Deplace le focus dans le panneau a l'ouverture, et le rend a l'element qui
+  // l'avait a la fermeture. Sans ca, le focus reste sur le bouton "Modifier" situe
+  // DERRIERE l'overlay : la navigation au clavier continue dans la page masquee.
+  useEffect(() => {
+    if (!action) return;
+    const previouslyFocused = document.activeElement;
+    drawerRef.current?.focus();
+    return () => {
+      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+    };
+  }, [action]);
 
   if (!action) return null;
 
@@ -105,11 +118,25 @@ export default function ActionEditDrawer({ missionId, action, onClose, onSaved }
     }
   }
 
+  const titleId = `action-drawer-title-${action.id}`;
+
   return (
     <div className="drawer-overlay" onClick={onClose}>
-      <div className="action-drawer" onClick={(e) => e.stopPropagation()}>
+      {/* role/aria-modal : c'etait une simple div, donc invisible en tant que boite
+          de dialogue pour les technologies d'assistance. Le focus est place sur le
+          panneau a l'ouverture (voir drawerRef) puis rendu a l'element d'origine a
+          la fermeture, sinon le focus reste derriere l'overlay. */}
+      <div
+        className="action-drawer"
+        onClick={(e) => e.stopPropagation()}
+        ref={drawerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
         <div className="action-drawer-header">
-          <div className="action-drawer-title">
+          <div className="action-drawer-title" id={titleId}>
             {isEvent ? <Calendar size={16} strokeWidth={2.25} /> : <Mail size={16} strokeWidth={2.25} />}
             {isEvent ? "Modifier l'événement" : "Modifier l'email"}
           </div>

@@ -54,15 +54,28 @@ export default function MissionView({ mission, onMissionUpdated, onMissionRename
   });
 
   useEffect(() => {
-    getTasks(mission.id)
-      .then(setTasks)
-      .catch(() => setTasks([]));
-    getDocuments(mission.id)
-      .then(setDocuments)
-      .catch(() => setDocuments([]));
-    getActions(mission.id)
-      .then(setActions)
-      .catch(() => setActions([]));
+    // Garde d'annulation : ces trois requetes sont independantes et non annulables.
+    // En changeant vite de mission, les reponses de la mission precedente pouvaient
+    // arriver apres et remplir le panneau lateral de la NOUVELLE mission avec les
+    // taches/documents/actions de l'ancienne.
+    let cancelled = false;
+    const load = (fetcher, setter) => {
+      fetcher(mission.id)
+        .then((value) => {
+          if (!cancelled) setter(value ?? []);
+        })
+        .catch(() => {
+          if (!cancelled) setter([]);
+        });
+    };
+
+    load(getTasks, setTasks);
+    load(getDocuments, setDocuments);
+    load(getActions, setActions);
+
+    return () => {
+      cancelled = true;
+    };
   }, [mission.id, mission.statut]);
 
   useEffect(() => {

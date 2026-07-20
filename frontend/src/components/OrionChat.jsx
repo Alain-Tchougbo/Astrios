@@ -340,7 +340,16 @@ export default function OrionChat({ missionId, missionStatut, onMissionUpdated }
 
   return (
     <div className="mission-chat">
-      <div className="chat-messages" ref={messagesRef}>
+      {/* aria-live : sans region live, un lecteur d'ecran n'annonce ni les reponses
+          d'Orion ni les etapes de generation, qui arrivent de facon asynchrone sans
+          que le focus ne bouge. "polite" attend une pause plutot que de couper. */}
+      <div
+        className="chat-messages"
+        ref={messagesRef}
+        role="log"
+        aria-live="polite"
+        aria-label="Conversation avec Orion"
+      >
         {messages.map((m, i) => (
           <div key={i} className={`chat-message ${m.role}`}>
             {m.role === "assistant" && (
@@ -422,6 +431,7 @@ export default function OrionChat({ missionId, missionStatut, onMissionUpdated }
           accept=".txt,.pdf"
           className="chat-file-input"
           onChange={handleFileSelect}
+          aria-label="Joindre un fichier (.txt ou .pdf, 2 Mo maximum)"
         />
         <button
           type="button"
@@ -434,6 +444,9 @@ export default function OrionChat({ missionId, missionStatut, onMissionUpdated }
         <textarea
           ref={textareaRef}
           className="chat-textarea"
+          // Un placeholder n'est pas un nom accessible : il disparait a la saisie et
+          // n'est pas annonce de facon fiable par les lecteurs d'ecran.
+          aria-label="Votre message à Orion"
           placeholder="Écris à Orion…"
           rows={1}
           value={input}

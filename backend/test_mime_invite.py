@@ -14,6 +14,15 @@ import ics_builder
 import smtp_sender
 
 
+def _unfold(ics: str) -> str:
+    """Annule le pliage RFC 5545 (CRLF + espace) pour pouvoir chercher une propriété
+    complète dans le texte. C'est exactement ce que fait un parseur iCalendar avant
+    d'interpréter le contenu : le pliage est un détail d'encodage de transport, pas
+    une modification de la donnée. Les lignes longues (ATTENDEE avec CN + mailto)
+    dépassent 75 octets et sont donc pliées dans la sortie réelle."""
+    return ics.replace("\r\n ", "")
+
+
 def test_calendar_part_is_sibling_of_alternative_not_nested_inside():
     ics = ics_builder.build_ics_invite(
         titre="Réunion test",
@@ -59,13 +68,80 @@ def test_vevent_has_required_fields():
         organizer_name="Orion",
         attendee_email="jean@example.com",
     )
-    assert "METHOD:REQUEST" in ics
-    assert "ORGANIZER" in ics and "mailto:orion@example.com" in ics
-    assert "ATTENDEE" in ics and "RSVP=TRUE" in ics and "mailto:jean@example.com" in ics
-    assert "UID:" in ics
-    assert "DTSTAMP:" in ics
-    assert "STATUS:CONFIRMED" in ics
-    assert "SEQUENCE:0" in ics
+    unfolded = _unfold(ics)
+    assert "METHOD:REQUEST" in unfolded
+    assert "ORGANIZER" in unfolded and "mailto:orion@example.com" in unfolded
+    assert "ATTENDEE" in unfolded and "RSVP=TRUE" in unfolded and "mailto:jean@example.com" in unfolded
+    assert "UID:" in unfolded
+    assert "DTSTAMP:" in unfolded
+    assert "STATUS:CONFIRMED" in unfolded
+    assert "SEQUENCE:0" in unfolded
+
+
+def test_lines_are_folded_to_75_octets_max():
+    # RFC 5545 §3.1 : aucune ligne de contenu ne doit dépasser 75 octets. Un
+    # SUMMARY/DESCRIPTION long ou accentué dépassait cette limite sans être plié,
+    # ce que les parseurs stricts (Outlook/Exchange) peuvent rejeter ou tronquer.
+    ics = ics_builder.build_ics_invite(
+        titre="Réunion de lancement du projet de refonte complète de la plateforme interne",
+        description="Ordre du jour très détaillé : présentation des équipes, revue du "
+        "périmètre fonctionnel, arbitrages budgétaires et prochaines étapes à valider.",
+        date_debut="2026-07-16T13:00:00",
+        date_fin="2026-07-16T14:00:00",
+        organizer_email="orion@example.com",
+        organizer_name="Orion",
+        attendee_email="jean@example.com",
+    )
+    for line in ics.split("\r\n"):
+        assert len(line.encode("utf-8")) <= 75, f"ligne non pliée ({len(line.encode())} octets) : {line!r}"
+
+    # Le pliage ne doit rien perdre : une fois déplié, le contenu reste intact.
+    unfolded = _unfold(ics)
+    assert "Réunion de lancement du projet de refonte complète" in unfolded
+    assert "arbitrages budgétaires" in unfolded
+
+
+def test_same_action_reuses_a_stable_uid_so_resending_updates_instead_of_duplicating():
+    # Un client mail identifie un événement par son UID : deux invitations d'UID
+    # différents créent DEUX entrées d'agenda. Un renvoi de la même action doit
+    # donc porter le MÊME UID (voir _action_ics_uid dans routers/missions.py).
+    kwargs = dict(
+        titre="Réunion test",
+        description="Ceci est un test",
+        date_debut="2026-07-16T13:00:00",
+        date_fin="2026-07-16T13:30:00",
+        organizer_email="orion@example.com",
+        organizer_name="Orion",
+        attendee_email="jean@example.com",
+    )
+    first = ics_builder.build_ics_invite(**kwargs, uid="astrios-action-42@astrios-demo")
+    second = ics_builder.build_ics_invite(**kwargs, uid="astrios-action-42@astrios-demo")
+    assert "UID:astrios-action-42@astrios-demo" in _unfold(first)
+    assert "UID:astrios-action-42@astrios-demo" in _unfold(second)
+
+    # Deux actions distinctes gardent en revanche des UID distincts.
+    other = ics_builder.build_ics_invite(**kwargs, uid="astrios-action-43@astrios-demo")
+    assert "UID:astrios-action-43@astrios-demo" in _unfold(other)
+
+
+def test_invalid_datetime_raises_actionable_error_instead_of_raw_valueerror():
+    # Une date malformée (secondes manquantes, ici) doit produire une erreur CONNUE
+    # portant un message actionnable, et non un ValueError brut de strptime affiché
+    # à l'utilisateur comme « une erreur inattendue est survenue ».
+    try:
+        ics_builder.build_ics_invite(
+            titre="Réunion test",
+            description="",
+            date_debut="2026-07-16T13:00",
+            date_fin="2026-07-16T13:30:00",
+            organizer_email="orion@example.com",
+            organizer_name="Orion",
+            attendee_email="jean@example.com",
+        )
+    except ics_builder.IcsBuildError as exc:
+        assert "AAAA-MM-JJTHH:MM:SS" in str(exc)
+    else:
+        raise AssertionError("une date invalide aurait dû lever IcsBuildError")
 
 
 def test_event_time_uses_tzid_wall_clock_with_embedded_vtimezone():
@@ -180,6 +256,9 @@ def test_oauth_channel_reuses_same_mime_structure_without_demo_branding():
 if __name__ == "__main__":
     test_calendar_part_is_sibling_of_alternative_not_nested_inside()
     test_vevent_has_required_fields()
+    test_lines_are_folded_to_75_octets_max()
+    test_same_action_reuses_a_stable_uid_so_resending_updates_instead_of_duplicating()
+    test_invalid_datetime_raises_actionable_error_instead_of_raw_valueerror()
     test_event_time_uses_tzid_wall_clock_with_embedded_vtimezone()
     test_google_calendar_link_uses_utc()
     test_email_html_includes_calendar_button_when_link_provided()

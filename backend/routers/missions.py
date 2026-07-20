@@ -119,6 +119,28 @@ def _build_action(mission_id: int, action_data: dict) -> models.Action:
     )
 
 
+def _merge_mission_facts(previous: dict | None, fresh: dict) -> dict:
+    """Fusionne les faits déjà connus avec ceux qu'on vient de ré-extraire.
+
+    À chaque réouverture de mission, extract_mission_facts repart de la conversation
+    COMPLÈTE et le résultat écrasait purement et simplement mission_facts. En
+    théorie cumulatif ; en pratique, il suffit que Qwen omette un fait déjà établi
+    (un destinataire d'un tour précédent, la durée d'un rendez-vous) pour qu'il soit
+    définitivement perdu — et les garde-fous déterministes qui s'appuient sur
+    mission_facts (validation des adresses email, dates de l'événement) laissent
+    alors passer ou rejettent à tort.
+
+    Règle : une valeur fraîche non vide gagne toujours (c'est une mise à jour
+    légitime) ; une valeur fraîche vide ne peut pas effacer un fait déjà connu."""
+    if not previous:
+        return fresh
+    merged = dict(fresh)
+    for key, old_value in previous.items():
+        if not fresh.get(key) and old_value:
+            merged[key] = old_value
+    return merged
+
+
 def _get_conversation_summary(db: Session, mission_id: int) -> str:
     last_assistant = (
         db.query(models.Message)
@@ -672,6 +694,12 @@ def chat_with_orion(
         # reste présent dans l'historique (posé par Orion lui-même) sans qu'aucune adresse
         # n'ait été acceptée — il ne faut alors PAS redemander un nom d'expéditeur pour un
         # email qui ne sera jamais envoyé.
+        # Fusion AVANT les contrôles ci-dessous : ils doivent raisonner sur l'état
+        # complet des faits connus, pas seulement sur ceux de cette extraction-ci —
+        # un destinataire établi lors d'un tour précédent mais absent de la
+        # ré-extraction reste un destinataire réel, qui exige toujours une signature.
+        mission_facts = _merge_mission_facts(mission.mission_facts, mission_facts)
+
         has_real_email_recipient = any(
             (d.get("email") or "").strip() for d in mission_facts.get("destinataires") or []
         )
@@ -902,12 +930,29 @@ def list_actions(mission_id: int, db: Session = Depends(get_db)):
 
 
 def _normalize_event_datetime(value: str) -> str:
-    # Un <input type="datetime-local"> renvoie "YYYY-MM-DDTHH:MM" (sans secondes) —
-    # on complète pour rester cohérent avec le format "YYYY-MM-DDTHH:MM:SS" utilisé
-    # partout ailleurs (généré par Qwen, stocké en base, envoyé à Google Calendar).
-    value = value.strip()
+    """Normalise puis VALIDE une date/heure saisie dans le formulaire d'édition.
+
+    Un <input type="datetime-local"> renvoie "YYYY-MM-DDTHH:MM" (sans secondes) — on
+    complète pour rester cohérent avec le format "YYYY-MM-DDTHH:MM:SS" utilisé partout
+    ailleurs (généré par Qwen, stocké en base, envoyé à Google Calendar).
+
+    La validation est faite ICI, au moment de la saisie : le champ est un texte libre
+    côté schéma, et une valeur malformée n'explosait qu'à l'EXÉCUTION, très loin de
+    là, dans le strptime strict d'ics_builder — l'utilisateur recevait alors un 502
+    « erreur inattendue » après avoir cliqué sur « Approuver et exécuter », sans
+    comprendre que le problème venait d'une date saisie plus tôt. La rejeter dès
+    l'édition avec un 400 explicite est à la fois plus tôt et plus clair."""
+    value = (value or "").strip()
     if len(value) == 16:
         value += ":00"
+    if value:
+        try:
+            datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Date ou heure invalide ({value}) — format attendu : AAAA-MM-JJTHH:MM:SS.",
+            ) from exc
     return value
 
 
@@ -934,6 +979,15 @@ def update_action(
         if not (titre and date_debut and date_fin):
             raise HTTPException(
                 status_code=400, detail="Titre, date de début et date de fin sont obligatoires."
+            )
+        # Un événement qui se termine avant de commencer est accepté sans broncher par
+        # le .ics comme par l'API Google, et produit une entrée d'agenda incohérente
+        # chez le destinataire — autant le refuser à la saisie.
+        if datetime.strptime(date_fin, "%Y-%m-%dT%H:%M:%S") <= datetime.strptime(
+            date_debut, "%Y-%m-%dT%H:%M:%S"
+        ):
+            raise HTTPException(
+                status_code=400, detail="La date de fin doit être postérieure à la date de début."
             )
         # Réassigner un nouveau dict (plutôt que muter action.details en place) est
         # nécessaire pour que SQLAlchemy détecte le changement sur cette colonne JSON.
@@ -983,6 +1037,11 @@ _SERVER_MODE_ERRORS = (
     smtp_sender.SmtpSendError,
     smtp_sender.ServerModeValidationError,
     rate_limiter.RateLimitExceeded,
+    # Date/heure d'événement inexploitable : erreur CONNUE et actionnable par
+    # l'utilisateur (il peut corriger l'action), donc son message doit lui être
+    # affiché tel quel au lieu du générique "une erreur inattendue est survenue"
+    # qu'un ValueError brut de strptime produisait.
+    ics_builder.IcsBuildError,
 )
 
 
@@ -1044,6 +1103,20 @@ def _resolve_calendar_recipient(action: models.Action) -> str | None:
     return match.group(0) if match else None
 
 
+def _action_ics_uid(action: models.Action) -> str:
+    """UID iCalendar STABLE, dérivé de l'id de l'action persistée.
+
+    Un client mail identifie un événement par son UID : deux invitations portant des
+    UID différents créent DEUX événements chez le destinataire, même si le titre et
+    les horaires sont identiques. build_ics_invite générait auparavant un uuid4() à
+    chaque appel — donc chaque renvoi de la MÊME action (retry après un échec
+    partiel du lot, ou action rééditée puis réexécutée) ajoutait un doublon dans
+    l'agenda du destinataire au lieu de mettre à jour l'événement existant.
+    Ancré sur action.id, l'UID est le même à chaque construction pour une action
+    donnée, et distinct d'une action à l'autre."""
+    return f"astrios-action-{action.id}@astrios-demo"
+
+
 def _execute_action(db: Session, mission_id: int, action: models.Action, mode: str) -> str:
     """Exécute réellement l'action selon le mode déterminé pour ce lot (voir
     _determine_execution_mode). Laisse remonter les erreurs des modes "oauth" et
@@ -1058,13 +1131,23 @@ def _execute_action(db: Session, mission_id: int, action: models.Action, mode: s
                 mission_id,
             )
             details = action.details or {}
+            # Action calendrier SEULE (aucun email combiné dans ce lot) : le
+            # participant doit être invité par Google lui-même, sinon l'événement
+            # n'existe que dans l'agenda du compte connecté et la personne
+            # concernée n'est jamais prévenue (voir create_calendar_event).
+            attendee = _resolve_calendar_recipient(action)
             google_calendar.create_calendar_event(
                 details.get("titre", ""),
                 details.get("description", ""),
                 details.get("date_debut"),
                 details.get("date_fin"),
+                attendee_email=attendee,
             )
-            message = "Événement créé dans Google Calendar."
+            message = (
+                f"Événement créé dans Google Calendar et invitation envoyée à {attendee}."
+                if attendee
+                else "Événement créé dans Google Calendar."
+            )
         else:
             logger.info(
                 "Envoi via Gmail API (compte user) : email seul, sans événement associé (mission %s).",
@@ -1093,6 +1176,7 @@ def _execute_action(db: Session, mission_id: int, action: models.Action, mode: s
                 organizer_email=organizer_email,
                 organizer_name=organizer_name,
                 attendee_email=recipient,
+                uid=_action_ics_uid(action),
             )
             calendar_link = ics_builder.build_google_calendar_link(
                 titre=details.get("titre", ""),
@@ -1105,14 +1189,21 @@ def _execute_action(db: Session, mission_id: int, action: models.Action, mode: s
                 recipient,
                 mission_id,
             )
+            # Le crédit d'envoi est réservé avant l'appel SMTP puis rendu si celui-ci
+            # échoue : sans ce remboursement, une panne SMTP passagère consommait
+            # définitivement le quota quotidien alors qu'aucun email n'était parti.
             rate_limiter.check_and_record_email()
-            smtp_sender.send_smtp_email(
-                destinataire=recipient,
-                sujet=f"Invitation : {details.get('titre', '')}",
-                contenu=details.get("description") or "Vous êtes invité(e) à cet événement.",
-                ics_content=ics_content,
-                calendar_link=calendar_link,
-            )
+            try:
+                smtp_sender.send_smtp_email(
+                    destinataire=recipient,
+                    sujet=f"Invitation : {details.get('titre', '')}",
+                    contenu=details.get("description") or "Vous êtes invité(e) à cet événement.",
+                    ics_content=ics_content,
+                    calendar_link=calendar_link,
+                )
+            except Exception:
+                rate_limiter.refund_email()
+                raise
             message = f"Invitation calendrier envoyée par email à {recipient} (mode démonstration)."
         else:
             smtp_sender.validate_real_recipient(action.destinataire)
@@ -1124,7 +1215,11 @@ def _execute_action(db: Session, mission_id: int, action: models.Action, mode: s
                 mission_id,
             )
             rate_limiter.check_and_record_email()
-            smtp_sender.send_smtp_email(action.destinataire, action.sujet, action.contenu)
+            try:
+                smtp_sender.send_smtp_email(action.destinataire, action.sujet, action.contenu)
+            except Exception:
+                rate_limiter.refund_email()
+                raise
             message = f"Email envoyé à {action.destinataire} (mode démonstration)."
 
     else:
@@ -1248,6 +1343,7 @@ def _execute_combined_email_and_event(
         organizer_email=organizer_email,
         organizer_name=organizer_name,
         attendee_email=email_action.destinataire,
+        uid=_action_ics_uid(event_action),
     )
     calendar_link = ics_builder.build_google_calendar_link(
         titre=details.get("titre", ""),
@@ -1297,13 +1393,17 @@ def _execute_combined_email_and_event(
             mission_id,
         )
         rate_limiter.check_and_record_email()
-        smtp_sender.send_smtp_email(
-            destinataire=email_action.destinataire,
-            sujet=email_action.sujet,
-            contenu=contenu,
-            ics_content=ics_content,
-            calendar_link=calendar_link,
-        )
+        try:
+            smtp_sender.send_smtp_email(
+                destinataire=email_action.destinataire,
+                sujet=email_action.sujet,
+                contenu=contenu,
+                ics_content=ics_content,
+                calendar_link=calendar_link,
+            )
+        except Exception:
+            rate_limiter.refund_email()
+            raise
         message = (
             f"Email et invitation calendrier envoyés à {email_action.destinataire} "
             "en un seul message (mode démonstration)."
@@ -1317,10 +1417,30 @@ def _execute_combined_email_and_event(
     return message
 
 
+def _client_ip(request: Request) -> str:
+    """Adresse IP réelle du visiteur.
+
+    Derrière Nginx (le cas du déploiement), request.client.host vaut l'adresse du
+    proxy (127.0.0.1) pour TOUT LE MONDE : la limite « 5 exécutions par heure et par
+    IP » devenait en pratique une limite globale partagée par tous les visiteurs, et
+    le premier utilisateur un peu actif bloquait la démo pour les suivants. On
+    privilégie donc le premier maillon de X-Forwarded-For, qui porte l'IP d'origine.
+
+    Note : cet en-tête est falsifiable si l'API est exposée en direct — il n'est
+    fiable que parce qu'un reverse proxy le renseigne. C'est un garde-fou anti-abus
+    de démonstration, pas un contrôle de sécurité."""
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        first_hop = forwarded_for.split(",")[0].strip()
+        if first_hop:
+            return first_hop
+    return request.client.host if request.client else "unknown"
+
+
 def _check_server_mode_rate_limit(request: Request, mode: str) -> None:
     if mode != "server":
         return
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _client_ip(request)
     try:
         rate_limiter.check_and_record_execution(client_ip)
     except rate_limiter.RateLimitExceeded as exc:

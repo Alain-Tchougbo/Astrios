@@ -1,10 +1,19 @@
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from database import Base
+
+
+def _utcnow() -> datetime:
+    """Horodatage UTC naïf, comme datetime.utcnow() — déprécié depuis Python 3.12 et
+    voué à disparaître. Les colonnes DateTime existantes stockent des valeurs naïves :
+    on retire donc explicitement le fuseau après avoir pris l'heure en UTC, pour ne
+    pas mélanger valeurs naïves et aware dans une même colonne (comparaisons et tris
+    lèveraient alors des TypeError sur les lignes historiques)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class MissionStatus(str, enum.Enum):
@@ -45,7 +54,7 @@ class Mission(Base):
     # générateurs (plan, documents, actions) pour qu'ils restent rigoureusement
     # cohérents entre eux au lieu de diverger via des appels Qwen indépendants.
     mission_facts = Column(JSON, nullable=True)
-    date_creation = Column(DateTime, default=datetime.utcnow)
+    date_creation = Column(DateTime, default=_utcnow)
 
     messages = relationship("Message", back_populates="mission", cascade="all, delete-orphan")
     tasks = relationship(
@@ -66,7 +75,7 @@ class Message(Base):
     mission_id = Column(Integer, ForeignKey("missions.id"), nullable=False)
     role = Column(Enum(MessageRole), nullable=False)
     contenu = Column(Text, nullable=False)
-    date_creation = Column(DateTime, default=datetime.utcnow)
+    date_creation = Column(DateTime, default=_utcnow)
 
     mission = relationship("Mission", back_populates="messages")
 
@@ -80,7 +89,7 @@ class Task(Base):
     description = Column(Text, nullable=True)
     ordre = Column(Integer, nullable=False, default=0)
     statut = Column(Enum(TaskStatus), nullable=False, default=TaskStatus.a_faire)
-    date_creation = Column(DateTime, default=datetime.utcnow)
+    date_creation = Column(DateTime, default=_utcnow)
 
     mission = relationship("Mission", back_populates="tasks")
 
@@ -101,7 +110,7 @@ class Document(Base):
     # l'action email correspondante réutilise alors son titre/contenu verbatim au
     # lieu d'être régénérée indépendamment (voir _run_generate_actions).
     is_email_source = Column(Boolean, nullable=True, default=False)
-    date_creation = Column(DateTime, default=datetime.utcnow)
+    date_creation = Column(DateTime, default=_utcnow)
 
     mission = relationship("Mission", back_populates="documents")
 
@@ -121,6 +130,6 @@ class Action(Base):
     # "oauth" (compte Google de l'utilisateur), "server" (SMTP + .ics via le compte de
     # démo), "simulation" (aucun envoi réel) — renseigné au moment de l'exécution.
     execution_mode = Column(String, nullable=True)
-    date_creation = Column(DateTime, default=datetime.utcnow)
+    date_creation = Column(DateTime, default=_utcnow)
 
     mission = relationship("Mission", back_populates="actions")

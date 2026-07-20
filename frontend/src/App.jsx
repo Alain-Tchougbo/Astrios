@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Sidebar from "./components/Sidebar";
 import EmptyState from "./components/EmptyState";
 import MissionView from "./components/MissionView";
-import { getMissions, getMission, createMission } from "./api";
+import { getMissions, getMission, createMission, API_URL } from "./api";
 import "./App.css";
 
 function App() {
@@ -38,9 +38,20 @@ function App() {
       setSelectedMission(null);
       return;
     }
+    // Garde d'annulation : en changeant rapidement de mission, la reponse d'une
+    // requete precedente pouvait arriver APRES celle de la mission qu'on vient de
+    // selectionner, et ecraser l'affichage avec la mission d'avant.
+    let cancelled = false;
     getMission(selectedId)
-      .then(setSelectedMission)
-      .catch(() => setError("Impossible de charger cette mission."));
+      .then((mission) => {
+        if (!cancelled) setSelectedMission(mission);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Impossible de charger cette mission.");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedId]);
 
   async function refreshMissions(selectFirst = false) {
@@ -51,7 +62,9 @@ function App() {
         setSelectedId(data[0].id);
       }
     } catch {
-      setError("Backend injoignable sur localhost:8000.");
+      // L'adresse etait codee en dur sur localhost:8000, ce qui donnait un message
+      // trompeur en production ou l'API est ailleurs (VITE_API_URL).
+      setError(`Backend injoignable sur ${API_URL}.`);
     }
   }
 

@@ -1,12 +1,30 @@
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "astrios.db")
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# timeout=30 : les endpoints FastAPI sont synchrones, donc exécutés dans un pool de
+# threads — deux requêtes concurrentes qui écrivent (ex. deux approbations sur des
+# missions différentes) peuvent se croiser. Par défaut SQLite abandonne immédiatement
+# avec "database is locked" ; ici l'écrivain attend que le verrou se libère.
+engine = create_engine(
+    DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30}
+)
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+    """WAL : les lecteurs ne bloquent plus l'écrivain (et inversement), ce qui élimine
+    l'essentiel des "database is locked" quand l'UI rafraîchit tâches/documents/actions
+    pendant qu'une exécution écrit. busy_timeout double le timeout du driver côté
+    moteur SQLite lui-même."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

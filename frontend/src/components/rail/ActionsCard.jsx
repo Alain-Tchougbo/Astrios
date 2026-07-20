@@ -68,11 +68,23 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
   const pendingActions = actions.filter((a) => a.statut === "en_attente");
   const resolvedActions = actions.filter((a) => a.statut !== "en_attente");
 
+  // Le mode d'execution depend du serveur (compte Google connecte / SMTP configure),
+  // pas du nombre d'actions : le recalculer a chaque ajout ou retrait declenchait un
+  // appel reseau inutile. Une garde d'annulation evite en plus qu'une reponse tardive
+  // n'ecrase le mode d'une autre mission apres un changement de selection.
   useEffect(() => {
+    let cancelled = false;
     getExecutionMode()
-      .then((res) => setExecutionMode(res.mode))
-      .catch(() => setExecutionMode(null));
-  }, [missionId, actions.length]);
+      .then((res) => {
+        if (!cancelled) setExecutionMode(res.mode);
+      })
+      .catch(() => {
+        if (!cancelled) setExecutionMode(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [missionId]);
 
   async function handleExclude(action) {
     setExcludingId(action.id);
@@ -266,10 +278,13 @@ export default function ActionsCard({ missionId, actions, onActionUpdated, onAll
                 </div>
               )}
 
+              {/* Desactive aussi pendant un retrait en cours : sinon l'utilisateur
+                  pouvait lancer l'execution du lot alors qu'une action etait en train
+                  d'en etre retiree, et cette action partait quand meme pour de vrai. */}
               <button
                 type="button"
                 className="action-approve-all-btn"
-                disabled={approving}
+                disabled={approving || excludingId !== null}
                 onClick={() => handleApproveAll(false)}
               >
                 <Check size={15} strokeWidth={2.5} />

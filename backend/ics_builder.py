@@ -2,7 +2,7 @@ import os
 import urllib.parse
 import uuid
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Fuseau dans lequel les horaires "muraux" issus de mission_facts (ex. "13:00")
 # doivent être interprétés — configurable car la démo n'est pas nécessairement
@@ -12,12 +12,71 @@ from zoneinfo import ZoneInfo
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Africa/Porto-Novo")
 
 
+class IcsBuildError(Exception):
+    """Levée quand une date/heure d'action n'est pas exploitable pour construire
+    l'invitation. Sans ça, un format inattendu (secondes manquantes, valeur None,
+    suffixe de fuseau) faisait remonter un ValueError/TypeError brut depuis
+    strptime, présenté à l'utilisateur comme « une erreur inattendue » sans lui
+    dire quoi corriger. Traitée comme une erreur connue par le routeur (voir
+    _SERVER_MODE_ERRORS) pour que son message soit affiché tel quel."""
+
+
+# RFC 5545 §3.1 : une ligne de contenu ne doit pas dépasser 75 octets (hors CRLF).
+_MAX_LINE_OCTETS = 75
+
+
 def _escape(text: str) -> str:
     return (text or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 
+def _fold_line(line: str) -> str:
+    """Plie une ligne trop longue selon RFC 5545 §3.1 : découpe en morceaux de 75
+    octets maximum, les suivants précédés d'une espace (qui compte dans la limite,
+    d'où 74 octets utiles). Le découpage se fait sur des frontières de CARACTÈRES,
+    jamais au milieu d'une séquence UTF-8 multi-octets — un SUMMARY/DESCRIPTION
+    accentué dépasse 75 octets bien avant 75 caractères. Sans pliage, les parseurs
+    stricts (certaines piles Outlook/Exchange) rejettent ou tronquent l'invitation ;
+    Gmail est tolérant, ce qui masquait le problème en démo."""
+    if len(line.encode("utf-8")) <= _MAX_LINE_OCTETS:
+        return line
+
+    chunks: list[str] = []
+    current = ""
+    current_octets = 0
+    limit = _MAX_LINE_OCTETS
+    for char in line:
+        char_octets = len(char.encode("utf-8"))
+        if current_octets + char_octets > limit:
+            chunks.append(current)
+            current = ""
+            current_octets = 0
+            # Les lignes de continuation commencent par une espace, comptée dans les 75.
+            limit = _MAX_LINE_OCTETS - 1
+        current += char
+        current_octets += char_octets
+    chunks.append(current)
+    return "\r\n ".join(chunks)
+
+
 def _local_datetime(naive_str: str) -> datetime:
-    return datetime.strptime(naive_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=ZoneInfo(APP_TIMEZONE))
+    try:
+        zone = ZoneInfo(APP_TIMEZONE)
+    except ZoneInfoNotFoundError as exc:
+        # Distinct d'une date invalide : ici c'est la CONFIGURATION du serveur qui est
+        # en cause (APP_TIMEZONE inconnu, ou paquet tzdata absent de l'environnement),
+        # pas la saisie de l'utilisateur — qui n'a donc rien à corriger de son côté.
+        raise IcsBuildError(
+            f"Fuseau horaire APP_TIMEZONE invalide ou introuvable ({APP_TIMEZONE!r}) — "
+            "vérifie cette variable d'environnement et la présence du paquet tzdata."
+        ) from exc
+
+    try:
+        return datetime.strptime(naive_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=zone)
+    except (ValueError, TypeError) as exc:
+        raise IcsBuildError(
+            f"Date ou heure d'événement invalide ({naive_str!r}) — format attendu : "
+            "AAAA-MM-JJTHH:MM:SS. Modifie l'action pour corriger la date avant d'exécuter."
+        ) from exc
 
 
 def _to_ics_wall_datetime(naive_str: str) -> str:
@@ -74,6 +133,7 @@ def build_ics_invite(
     organizer_email: str,
     organizer_name: str,
     attendee_email: str,
+    uid: str | None = None,
 ) -> str:
     """Génère un fichier iCalendar (VCALENDAR/VEVENT, METHOD:REQUEST) standard,
     utilisé en mode serveur (pas de compte Google connecté) pour envoyer une
@@ -83,9 +143,23 @@ def build_ics_invite(
     DTSTART/DTEND utilisent TZID=<APP_TIMEZONE> avec un bloc VTIMEZONE embarqué
     (plutôt qu'une conversion UTC "Z") : conforme RFC 5545 même pour un client qui
     ne connaîtrait pas APP_TIMEZONE via sa propre base IANA.
+
+    uid : identifiant iCalendar de l'événement. Un client mail identifie un
+    événement par son UID — deux invitations de UID différents créent DEUX
+    événements distincts dans l'agenda du destinataire, même si tout le reste est
+    identique. Il faut donc passer un UID STABLE, dérivé de l'action persistée
+    (voir _action_ics_uid dans routers/missions.py) : sans ça, un renvoi de la même
+    invitation (retry après un échec partiel, ou une action rééditée puis
+    réexécutée) produisait un DOUBLON au lieu d'une mise à jour. Par défaut, un UID
+    aléatoire est généré — repli acceptable uniquement pour un envoi ponctuel sans
+    action associée.
     """
     reference_year = _local_datetime(date_debut).year
-    uid = f"{uuid.uuid4()}@astrios-demo"
+    # Validé même si la valeur formatée ne passe pas par _local_datetime : une
+    # date de fin malformée doit échouer ici avec un message clair, pas produire
+    # un DTEND silencieusement invalide dans l'invitation envoyée.
+    _local_datetime(date_fin)
+    uid = uid or f"{uuid.uuid4()}@astrios-demo"
     dtstamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dtstart = _to_ics_wall_datetime(date_debut)
     dtend = _to_ics_wall_datetime(date_fin)
@@ -111,7 +185,7 @@ def build_ics_invite(
         "END:VEVENT",
         "END:VCALENDAR",
     ]
-    return "\r\n".join(lines) + "\r\n"
+    return "\r\n".join(_fold_line(line) for line in lines) + "\r\n"
 
 
 def build_google_calendar_link(
